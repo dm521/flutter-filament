@@ -1,0 +1,45 @@
+material {
+    name : Unlit,
+    requires : [ position ],
+    parameters : [
+        {
+            type : sampler2d,
+            name : baseColorMap,
+            precision: medium
+        },
+        { 
+            type : float4, 
+            name : baseColorFactor 
+        },
+        { 
+            type : int, 
+            name : baseColorIndex 
+        },
+        {
+            type: float2,
+            name: uvScale
+        }
+    ],
+    depthWrite : true,
+    depthCulling : true,
+    shadingModel : unlit,
+    blending: transparent,
+    culling: none,
+    instanced: false,
+    vertexDomain: object,
+}
+  
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);           
+        material.baseColor = materialParams.baseColorFactor;
+        material.baseColor.rgb = material.baseColor.rgb * material.baseColor.a;
+        
+        if (materialParams.baseColorIndex > -1) {
+            highp float2 uv = getUV0();
+            uv *= materialParams.uvScale;
+            material.baseColor *= texture(materialParams_baseColorMap, uv);
+        }
+    }
+}
+

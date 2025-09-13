@@ -1,0 +1,12 @@
+**/*/.cxx
+**/.idea
+.dart_tool
+**/.dart_tool
+.vscode
+.DS_Store
+**/*/build
+**/*/pubspec.lock
+pubspec_overrides.yaml
+/pubspec.lock
+*.iml
+**/*/*.filamat
