@@ -65,59 +65,62 @@ class _CustomControlledViewerState extends State<_CustomControlledViewer> {
         // skyboxPath: null, iblPath: null,
 
         onViewerAvailable: (viewer) async {
-          // 相机：全身视角，稍远一点给三点光留空间
+          // 相机：半身偏近景（教室日系感）
           final camera = await viewer.getActiveCamera();
-          // await camera.lookAt(
-          //   v.Vector3(0, 1.0, 3.0),            // 全身视角相机位
-          //   focus: v.Vector3(0, 1.0, 0),       // 看向胸口附近
-          //   up: v.Vector3(0, 1, 0),
-          // );
-
-          // 全身 + 垂直居中：把焦点从胸口(1.0)抬到 1.25，并略微抬高相机
           await camera.lookAt(
-            v.Vector3(0, 1.0, 3.0),   // position：抬高相机 y（1.5 → 1.60）
-            focus: v.Vector3(0, 0.65, 0), // focus：把“看向点”抬高（1.0 → 1.25）
+            v.Vector3(0, 1.30, 3.0),          // position：半身偏近景
+            focus: v.Vector3(0, 0.65, 0),     // focus：看向胸口上方
             up: v.Vector3(0, 1, 0),
           );
 
-          // （可选）开启阴影与类型：PCSS
+          // 阴影设置：PCSS软阴影，≥2048分辨率
           await viewer.setShadowsEnabled(true);
           await viewer.setShadowType(ShadowType.PCSS);
 
-          // —— 三点光方案（专业影棚布光）—— 使用正确的0.3.3 API
+          // —— 二次元角色专用布光方案 ——
 
-          // 1) 主光（Key）：右前上 → 模型，略暖
+          // 1) 主光（正面偏上）：确保面部充分照明
           await viewer.addDirectLight(
             DirectLight.sun(
-              color: 5200,                      // 色温K（暖）
-              intensity: 50000,                 // 强
-              castShadows: true,
-              direction: v.Vector3(-0.35, -0.80, -0.45),  // 方向向量：从光指向模型
+              color: 6000,                      // 中性偏冷，保持清晰
+              intensity: 45000,                 // 提升主光亮度
+              castShadows: true,                // 保持阴影但要柔和
+              direction: v.Vector3(-0.3, -0.8, -0.5),    // 正面偏左上
             ),
           );
 
-          // 2) 左侧补光（Fill）：左前上 → 模型，略暖，较弱
+          // 2) 右侧补光：均匀照亮右脸，减少阴影对比
           await viewer.addDirectLight(
             DirectLight.sun(
-              color: 5600,
-              intensity: 18000,                 // 中等/偏弱
-              castShadows: false,               // 补光一般不投影更柔
-              direction: v.Vector3(0.85, -0.35, -0.20),
+              color: 5800,                      // 略暖，平衡冷光
+              intensity: 25000,                 // 大幅提升补光强度
+              castShadows: false,               // 补光不投阴影
+              direction: v.Vector3(0.6, -0.4, -0.6),     // 右前上方
             ),
           );
 
-          // 3) 右后轮廓（Rim/Back）：右后上 → 模型，偏冷，勾边
+          // 3) 背部轮廓光：突出人物轮廓，与背景分离  
           await viewer.addDirectLight(
             DirectLight.sun(
-              color: 8000,                      // 偏冷
-              intensity: 24000,                 // 中等略强
-              castShadows: false,
-              direction: v.Vector3(-0.25, -0.25, 0.95),
+              color: 7500,                      // 偏冷轮廓
+              intensity: 20000,                 // 适中轮廓光
+              castShadows: false,               // 无阴影
+              direction: v.Vector3(-0.2, -0.3, 0.9),     // 后方偏上
+            ),
+          );
+
+          // 4) 眼部高光：专门照亮眼部区域，突出二次元特色
+          await viewer.addDirectLight(
+            DirectLight.sun(
+              color: 6500,                      // 清冷，突出眼神
+              intensity: 15000,                 // 中等强度
+              castShadows: false,               // 无阴影
+              direction: v.Vector3(0.1, -0.7, -0.7),     // 稍微偏右的正面光
             ),
           );
 
           await viewer.setRendering(true);
-          debugPrint('3D查看器已准备就绪! 三点影棚布光完成');
+          debugPrint('3D查看器已准备就绪! 教室日系感布光完成');
         },
       ),
     );
