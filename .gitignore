@@ -34,6 +34,7 @@ migrate_working_dir/
 /build/
 /coverage/
 /thermion/
+/filament/
 
 # Symbolication related
 app.*.symbols
