@@ -3,6 +3,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' as v;
 import 'dart:async';
+import 'studio_test_page.dart';
+import 'hdr_environment_test.dart';
 
 // 稳定的 ViewerWidget 包装器，避免重建问题
 class StableViewerWidget extends StatefulWidget {
@@ -27,7 +29,7 @@ class _StableViewerWidgetState extends State<StableViewerWidget> {
       transformToUnitCube: true,
       manipulatorType: ManipulatorType.NONE,
       background: const Color(0xFF404040),
-      initialCameraPosition: v.Vector3(0.0, 1.2, 3.0),
+      initialCameraPosition: v.Vector3(0.0, 0.0, 5.0),
       onViewerAvailable: widget.onViewerAvailable,
     );
   }
@@ -39,9 +41,13 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: ThermionDemo(),
+      home: const ThermionDemo(),
+      routes: {
+        '/studio-test': (context) => const StudioTestPage(),
+        '/hdr-environment': (context) => const HDREnvironmentTest(),
+      },
     );
   }
 }
@@ -167,10 +173,10 @@ class _ThermionDemoState extends State<ThermionDemo>
   void _resetCamera() {
     setState(() {
       _cameraX = 0.0;
-      _cameraY = 1.2;
-      _cameraZ = 2.5;
+      _cameraY = 0.0;
+      _cameraZ = 5.0;
       _focusX = 0.0;
-      _focusY = 0.6;
+      _focusY = 0.0;
       _focusZ = 0.0;
     });
     _updateCamera();
@@ -311,18 +317,35 @@ class _ThermionDemoState extends State<ThermionDemo>
       debugPrint('❌ 环境切换条件不满足: viewer=$_viewer, key=$environmentKey, initialized=$_viewerInitialized');
       return;
     }
-    
+
     setState(() {
       _currentEnvironment = environmentKey;
     });
-    
+
     try {
       final env = _environments[environmentKey]!;
-      
+
+      // 根据不同场景调整IBL强度
+      double adjustedIblIntensity = _iblIntensity;
+      switch (environmentKey) {
+        case 'studio':
+          adjustedIblIntensity = _iblIntensity * 1.2; // 摄影棚更亮
+          break;
+        case 'outdoor':
+          adjustedIblIntensity = _iblIntensity * 1.5; // 户外最亮
+          break;
+        case 'sunset':
+          adjustedIblIntensity = _iblIntensity * 0.8; // 黄昏柔和
+          break;
+        case 'night':
+          adjustedIblIntensity = _iblIntensity * 0.5; // 夜景昏暗
+          break;
+      }
+
       // 加载新的 IBL 环境
-      debugPrint('🔄 加载 IBL: ${env['ibl']}，强度: $_iblIntensity');
-      await _viewer!.loadIbl(env['ibl']!, intensity: _iblIntensity, destroyExisting: true);
-      
+      debugPrint('🔄 加载 IBL: ${env['ibl']}，强度: $adjustedIblIntensity');
+      await _viewer!.loadIbl(env['ibl']!, intensity: adjustedIblIntensity, destroyExisting: true);
+
       // 加载新的 Skybox（如果启用且有 skybox 文件）
       if (_showSkybox && env['skybox']!.isNotEmpty) {
         debugPrint('🔄 加载 Skybox: ${env['skybox']}');
@@ -332,9 +355,12 @@ class _ThermionDemoState extends State<ThermionDemo>
         debugPrint('🔄 移除 Skybox');
         await _viewer!.removeSkybox();
       }
-      
+
+      // 根据场景调整光照
+      await _adjustLightingForEnvironment(environmentKey);
+
       debugPrint('✅ 环境切换成功: ${env['name']}');
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('已切换到${env['name']}环境')),
@@ -348,6 +374,56 @@ class _ThermionDemoState extends State<ThermionDemo>
         );
       }
     }
+  }
+
+  // 根据环境调整光照参数
+  Future<void> _adjustLightingForEnvironment(String environmentKey) async {
+    if (_viewer == null) return;
+
+    switch (environmentKey) {
+      case 'studio':
+        // 摄影棚: 强烈的定向光
+        setState(() {
+          _faceWarmIntensity = 40000.0;
+          _legWarmIntensity = 30000.0;
+          _warmColorTemp = 5200.0;
+        });
+        break;
+      case 'outdoor':
+        // 户外: 明亮的自然光
+        setState(() {
+          _faceWarmIntensity = 25000.0;
+          _legWarmIntensity = 20000.0;
+          _warmColorTemp = 5600.0;
+        });
+        break;
+      case 'sunset':
+        // 黄昏: 温暖的橙色光
+        setState(() {
+          _faceWarmIntensity = 30000.0;
+          _legWarmIntensity = 25000.0;
+          _warmColorTemp = 3500.0;
+        });
+        break;
+      case 'night':
+        // 夜景: 柔和的冷光
+        setState(() {
+          _faceWarmIntensity = 20000.0;
+          _legWarmIntensity = 18000.0;  // 调整到滑块最小值之上
+          _warmColorTemp = 6500.0;
+        });
+        break;
+      default:
+        // 默认设置
+        setState(() {
+          _faceWarmIntensity = 35000.0;
+          _legWarmIntensity = 25000.0;
+          _warmColorTemp = 4800.0;
+        });
+    }
+
+    // 重新初始化光照
+    await _initializeLighting();
   }
 
   Future<void> _toggleSkybox() async {
@@ -393,17 +469,43 @@ class _ThermionDemoState extends State<ThermionDemo>
   // 控制面板显示状态
   bool _showControlPanel = false;
   
-  // 环境预设配置 - 暂时只使用默认环境避免崩溃
+  // 环境预设配置 - 多种HDR场景
   final Map<String, Map<String, String>> _environments = {
     'default': {
       'name': '默认环境',
       'ibl': 'assets/environments/default_env_ibl.ktx',
       'skybox': 'assets/environments/default_env_skybox.ktx',
+      'description': '标准室内光照',
+    },
+    'studio': {
+      'name': '摄影棚',
+      'ibl': 'assets/environments/studio_small_03_output_ibl.ktx',
+      'skybox': 'assets/environments/studio_small_03_output_skybox.ktx',
+      'description': '专业摄影棚光照',
+    },
+    'outdoor': {
+      'name': '户外日光',
+      'ibl': 'assets/environments/default_env_ibl.ktx',
+      'skybox': 'assets/environments/default_env_skybox.ktx',
+      'description': '明亮的户外环境',
+    },
+    'sunset': {
+      'name': '日落黄昏',
+      'ibl': 'assets/environments/default_env_ibl.ktx',
+      'skybox': 'assets/environments/default_env_skybox.ktx',
+      'description': '温暖的黄昏光照',
+    },
+    'night': {
+      'name': '夜景',
+      'ibl': 'assets/environments/default_env_ibl.ktx',
+      'skybox': '',
+      'description': '柔和的夜间照明',
     },
     'minimal': {
       'name': '简约环境',
       'ibl': 'assets/environments/default_env_ibl.ktx',
       'skybox': '', // 无 skybox，显示纯色背景
+      'description': '无环境纯色背景',
     },
   };
 
@@ -759,7 +861,7 @@ class _ThermionDemoState extends State<ThermionDemo>
                       _buildSlider('脸部暖光', _faceWarmIntensity, 10000.0, 50000.0, (value) {
                         _updateWarmLightIntensity(value, _legWarmIntensity);
                       }),
-                      _buildSlider('腿部暖光', _legWarmIntensity, 8000.0, 40000.0, (value) {
+                      _buildSlider('腿部暖光', _legWarmIntensity, 10000.0, 40000.0, (value) {
                         _updateWarmLightIntensity(_faceWarmIntensity, value);
                       }),
                     ],
@@ -784,7 +886,7 @@ class _ThermionDemoState extends State<ThermionDemo>
                       ),
                       const SizedBox(height: 12),
                       
-                      _buildSlider('暖光色温', _warmColorTemp, 4600.0, 5800.0, (value) {
+                      _buildSlider('暖光色温', _warmColorTemp, 3000.0, 7000.0, (value) {
                         setState(() => _warmColorTemp = value);
                         _initializeLighting();
                       }),
@@ -795,10 +897,12 @@ class _ThermionDemoState extends State<ThermionDemo>
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          _buildColorTempButton('超暖', 4600.0),
+                          _buildColorTempButton('蜡烛', 3000.0),
+                          _buildColorTempButton('黄昏', 3500.0),
                           _buildColorTempButton('温暖', 4800.0),
                           _buildColorTempButton('自然', 5000.0),
                           _buildColorTempButton('标准', 5200.0),
+                          _buildColorTempButton('日光', 6500.0),
                         ],
                       ),
                     ],
@@ -825,6 +929,24 @@ class _ThermionDemoState extends State<ThermionDemo>
       ),
       child: Text(label),
     );
+  }
+
+  // 获取环境对应的图标
+  IconData _getEnvironmentIcon(String environmentKey) {
+    switch (environmentKey) {
+      case 'studio':
+        return Icons.camera;
+      case 'outdoor':
+        return Icons.wb_sunny;
+      case 'sunset':
+        return Icons.wb_twilight;
+      case 'night':
+        return Icons.nights_stay;
+      case 'minimal':
+        return Icons.crop_square;
+      default:
+        return Icons.landscape;
+    }
   }
 
   Widget _buildEnvironmentControls() {
@@ -864,19 +986,68 @@ class _ThermionDemoState extends State<ThermionDemo>
                       ),
                       const SizedBox(height: 12),
                       
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                      // 环境场景选择网格
+                      GridView.count(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        crossAxisCount: 2,
+                        childAspectRatio: 2.5,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
                         children: _environments.entries.map((entry) {
                           final isSelected = entry.key == _currentEnvironment;
-                          return FilterChip(
-                            label: Text(entry.value['name']!),
-                            selected: isSelected,
-                            onSelected: (selected) {
-                              if (selected) _switchEnvironment(entry.key);
-                            },
-                            selectedColor: Colors.green.withValues(alpha: 0.3),
-                            backgroundColor: Colors.grey[100],
+                          return InkWell(
+                            onTap: () => _switchEnvironment(entry.key),
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: isSelected ? Colors.green : Colors.grey.shade300,
+                                  width: isSelected ? 2 : 1,
+                                ),
+                                borderRadius: BorderRadius.circular(8),
+                                color: isSelected
+                                  ? Colors.green.withValues(alpha: 0.1)
+                                  : Colors.grey.shade50,
+                              ),
+                              padding: const EdgeInsets.all(8),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        _getEnvironmentIcon(entry.key),
+                                        size: 16,
+                                        color: isSelected ? Colors.green : Colors.grey.shade600,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          entry.value['name']!,
+                                          style: TextStyle(
+                                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                            fontSize: 12,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    entry.value['description'] ?? '',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
                           );
                         }).toList(),
                       ),
@@ -1041,6 +1212,36 @@ class _ThermionDemoState extends State<ThermionDemo>
           
           // 悬浮控制面板
           _buildFloatingControlPanel(),
+
+          // Studio 测试页面按钮
+          Positioned(
+            top: 100,
+            right: 16,
+            child: FloatingActionButton(
+              heroTag: "studio_test",
+              onPressed: () {
+                Navigator.pushNamed(context, '/studio-test');
+              },
+              backgroundColor: Colors.orange,
+              tooltip: 'Studio 场景测试',
+              child: const Icon(Icons.camera_alt, color: Colors.white),
+            ),
+          ),
+
+          // HDR 全景测试按钮
+          Positioned(
+            top: 170,
+            right: 16,
+            child: FloatingActionButton(
+              heroTag: "hdr_environment",
+              onPressed: () {
+                Navigator.pushNamed(context, '/hdr-environment');
+              },
+              backgroundColor: Colors.purple,
+              tooltip: 'HDR 全景环境',
+              child: const Icon(Icons.panorama_horizontal, color: Colors.white),
+            ),
+          ),
         ],
       ),
     );
