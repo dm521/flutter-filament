@@ -63,6 +63,8 @@ build/
 coverage/
 /thermion/
 /filament/
+thermion/
+filament/
 flutter_*.png
 linked_*.ds
 unlinked.ds
