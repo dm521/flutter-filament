@@ -78,6 +78,18 @@ class _ThermionDemoState extends State<ThermionDemo>
   double _penumbraScale = 2.0;
   double _penumbraRatioScale = 0.4;
   
+  // 暖光控制
+  bool _warmLightEnabled = true;
+  double _faceWarmIntensity = 35000.0;  // 大幅提高脸部暖光
+  double _legWarmIntensity = 25000.0;   // 大幅提高腿部暖光
+  double _warmColorTemp = 4800.0;       // 更暖的色温
+  
+  // 背景环境控制
+  String _currentEnvironment = 'default';
+  bool _showSkybox = true;
+  double _iblIntensity = 30000.0;
+  bool _viewerInitialized = false;
+  
   @override
   void initState() {
     super.initState();
@@ -213,19 +225,272 @@ class _ThermionDemoState extends State<ThermionDemo>
     }
   }
 
-  // UI 构建方法
-  Widget _buildControlPanel() {
-    return Container(
-      color: Colors.grey[50],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 相机控制折叠面板
-          _buildCameraControls(),
-          
-          // 阴影控制折叠面板
-          _buildShadowControls(),
-        ],
+  // 暖光控制方法
+  Future<void> _toggleWarmLight() async {
+    if (_viewer == null) return;
+    
+    setState(() {
+      _warmLightEnabled = !_warmLightEnabled;
+    });
+    
+    // 重新初始化光照系统
+    await _initializeLighting();
+  }
+
+  Future<void> _updateWarmLightIntensity(double faceIntensity, double legIntensity) async {
+    if (_viewer == null) return;
+    
+    setState(() {
+      _faceWarmIntensity = faceIntensity;
+      _legWarmIntensity = legIntensity;
+    });
+    
+    // 重新初始化光照系统
+    await _initializeLighting();
+  }
+
+  // 光照系统初始化方法
+  Future<void> _initializeLighting() async {
+    if (_viewer == null) return;
+    
+    try {
+      // 清除现有光照
+      await _viewer!.destroyLights();
+      
+      // 1. 主光源 - 降低强度为暖光让路
+      await _viewer!.addDirectLight(DirectLight.sun(
+        color: 5600.0,
+        intensity: 70000.0,  // 降低主光源强度
+        direction: v.Vector3(0.5, -0.8, -0.6).normalized(),
+        castShadows: true,
+        sunAngularRadius: 1.2,
+      ));
+
+      // 2. 脸部暖光 - 根据开关状态
+      if (_warmLightEnabled) {
+        await _viewer!.addDirectLight(DirectLight.point(
+          color: _warmColorTemp,
+          intensity: _faceWarmIntensity,
+          position: v.Vector3(0.0, 1.4, 2.2),
+          falloffRadius: 4.5,
+        ));
+
+        // 3. 腿部补光
+        await _viewer!.addDirectLight(DirectLight.point(
+          color: _warmColorTemp + 200, // 稍微偏暖
+          intensity: _legWarmIntensity,
+          position: v.Vector3(0.0, 0.6, 1.9),
+          falloffRadius: 3.8,
+        ));
+      }
+
+      // 4. 填充光
+      await _viewer!.addDirectLight(DirectLight.sun(
+        color: 5800.0,
+        intensity: 16000.0,
+        direction: v.Vector3(-0.6, -0.2, -0.8).normalized(),
+        castShadows: false,
+      ));
+
+      // 5. 轮廓光
+      await _viewer!.addDirectLight(DirectLight.sun(
+        color: 6800.0,
+        intensity: 22000.0,
+        direction: v.Vector3(-0.2, 0.1, 0.9).normalized(),
+        castShadows: false,
+      ));
+      
+    } catch (e) {
+      debugPrint('❌ 光照系统初始化失败: $e');
+    }
+  }
+
+  // 背景环境控制方法
+  Future<void> _switchEnvironment(String environmentKey) async {
+    if (_viewer == null || !_environments.containsKey(environmentKey) || !_viewerInitialized) {
+      debugPrint('❌ 环境切换条件不满足: viewer=$_viewer, key=$environmentKey, initialized=$_viewerInitialized');
+      return;
+    }
+    
+    setState(() {
+      _currentEnvironment = environmentKey;
+    });
+    
+    try {
+      final env = _environments[environmentKey]!;
+      
+      // 加载新的 IBL 环境
+      debugPrint('🔄 加载 IBL: ${env['ibl']}，强度: $_iblIntensity');
+      await _viewer!.loadIbl(env['ibl']!, intensity: _iblIntensity, destroyExisting: true);
+      
+      // 加载新的 Skybox（如果启用且有 skybox 文件）
+      if (_showSkybox && env['skybox']!.isNotEmpty) {
+        debugPrint('🔄 加载 Skybox: ${env['skybox']}');
+        await _viewer!.loadSkybox(env['skybox']!);
+      } else {
+        // 移除 skybox，显示纯色背景
+        debugPrint('🔄 移除 Skybox');
+        await _viewer!.removeSkybox();
+      }
+      
+      debugPrint('✅ 环境切换成功: ${env['name']}');
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已切换到${env['name']}环境')),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ 环境切换失败: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('环境切换失败: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _toggleSkybox() async {
+    if (_viewer == null) return;
+    
+    setState(() {
+      _showSkybox = !_showSkybox;
+    });
+    
+    try {
+      if (_showSkybox) {
+        final env = _environments[_currentEnvironment]!;
+        if (env['skybox']!.isNotEmpty) {
+          debugPrint('🔄 启用 Skybox: ${env['skybox']}');
+          await _viewer!.loadSkybox(env['skybox']!);
+        }
+      } else {
+        // 移除 skybox，显示纯色背景
+        debugPrint('🔄 禁用 Skybox');
+        await _viewer!.removeSkybox();
+      }
+    } catch (e) {
+      debugPrint('❌ Skybox 切换失败: $e');
+    }
+  }
+
+  Future<void> _updateIblIntensity(double intensity) async {
+    if (_viewer == null) return;
+    
+    setState(() {
+      _iblIntensity = intensity;
+    });
+    
+    try {
+      final env = _environments[_currentEnvironment]!;
+      debugPrint('🔄 更新 IBL 强度: $intensity');
+      await _viewer!.loadIbl(env['ibl']!, intensity: intensity, destroyExisting: true);
+    } catch (e) {
+      debugPrint('❌ IBL 强度更新失败: $e');
+    }
+  }
+
+  // 控制面板显示状态
+  bool _showControlPanel = false;
+  
+  // 环境预设配置 - 暂时只使用默认环境避免崩溃
+  final Map<String, Map<String, String>> _environments = {
+    'default': {
+      'name': '默认环境',
+      'ibl': 'assets/environments/default_env_ibl.ktx',
+      'skybox': 'assets/environments/default_env_skybox.ktx',
+    },
+    'minimal': {
+      'name': '简约环境',
+      'ibl': 'assets/environments/default_env_ibl.ktx',
+      'skybox': '', // 无 skybox，显示纯色背景
+    },
+  };
+
+  // 悬浮控制面板
+  Widget _buildFloatingControlPanel() {
+    if (!_showControlPanel) return const SizedBox.shrink();
+    
+    return Positioned(
+      top: 80,
+      right: 16,
+      child: Container(
+        width: 350,
+        constraints: const BoxConstraints(maxHeight: 600),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.95),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.3),
+              blurRadius: 12,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 标题栏
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blueGrey[800],
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.tune, color: Colors.white, size: 20),
+                  const SizedBox(width: 8),
+                  const Text(
+                    '渲染控制',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                    onPressed: () {
+                      setState(() {
+                        _showControlPanel = false;
+                      });
+                    },
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+            
+            // 控制内容
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 相机控制
+                    _buildCameraControls(),
+                    
+                    // 阴影控制
+                    _buildShadowControls(),
+                    
+                    // 暖光控制
+                    _buildWarmLightControls(),
+                    
+                    // 背景环境控制
+                    _buildEnvironmentControls(),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -454,6 +719,228 @@ class _ThermionDemoState extends State<ThermionDemo>
     );
   }
 
+  Widget _buildWarmLightControls() {
+    return ExpansionTile(
+      title: Row(
+        children: [
+          const Icon(Icons.wb_incandescent, size: 20, color: Colors.amber),
+          const SizedBox(width: 8),
+          const Text('暖光效果', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Spacer(),
+          Switch(
+            value: _warmLightEnabled,
+            onChanged: (value) => _toggleWarmLight(),
+          ),
+        ],
+      ),
+      subtitle: Text('脸部: ${(_faceWarmIntensity/1000).toStringAsFixed(0)}K | 腿部: ${(_legWarmIntensity/1000).toStringAsFixed(0)}K | 色温: ${_warmColorTemp.toStringAsFixed(0)}K'),
+      initiallyExpanded: false,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              // 暖光强度控制
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.lightbulb, size: 18),
+                          SizedBox(width: 8),
+                          Text('暖光强度', style: TextStyle(fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      _buildSlider('脸部暖光', _faceWarmIntensity, 10000.0, 50000.0, (value) {
+                        _updateWarmLightIntensity(value, _legWarmIntensity);
+                      }),
+                      _buildSlider('腿部暖光', _legWarmIntensity, 8000.0, 40000.0, (value) {
+                        _updateWarmLightIntensity(_faceWarmIntensity, value);
+                      }),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              
+              // 色温控制
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.palette, size: 18),
+                          SizedBox(width: 8),
+                          Text('色温调节', style: TextStyle(fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      _buildSlider('暖光色温', _warmColorTemp, 4600.0, 5800.0, (value) {
+                        setState(() => _warmColorTemp = value);
+                        _initializeLighting();
+                      }),
+                      
+                      const SizedBox(height: 8),
+                      // 快速色温预设
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _buildColorTempButton('超暖', 4600.0),
+                          _buildColorTempButton('温暖', 4800.0),
+                          _buildColorTempButton('自然', 5000.0),
+                          _buildColorTempButton('标准', 5200.0),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildColorTempButton(String label, double colorTemp) {
+    final isSelected = (_warmColorTemp - colorTemp).abs() < 50;
+    return ElevatedButton(
+      onPressed: () {
+        setState(() => _warmColorTemp = colorTemp);
+        _initializeLighting();
+      },
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isSelected ? Colors.amber.withValues(alpha: 0.3) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+      child: Text(label),
+    );
+  }
+
+  Widget _buildEnvironmentControls() {
+    return ExpansionTile(
+      title: Row(
+        children: [
+          const Icon(Icons.landscape, size: 20, color: Colors.green),
+          const SizedBox(width: 8),
+          const Text('背景环境', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Spacer(),
+          Switch(
+            value: _showSkybox,
+            onChanged: (value) => _toggleSkybox(),
+          ),
+        ],
+      ),
+      subtitle: Text('${_environments[_currentEnvironment]!['name']} | IBL强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K'),
+      initiallyExpanded: false,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              // 环境预设选择
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.photo_library, size: 18),
+                          SizedBox(width: 8),
+                          Text('环境预设', style: TextStyle(fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _environments.entries.map((entry) {
+                          final isSelected = entry.key == _currentEnvironment;
+                          return FilterChip(
+                            label: Text(entry.value['name']!),
+                            selected: isSelected,
+                            onSelected: (selected) {
+                              if (selected) _switchEnvironment(entry.key);
+                            },
+                            selectedColor: Colors.green.withValues(alpha: 0.3),
+                            backgroundColor: Colors.grey[100],
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              
+              // IBL 强度控制
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.brightness_6, size: 18),
+                          SizedBox(width: 8),
+                          Text('环境光强度', style: TextStyle(fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      _buildSlider('IBL强度', _iblIntensity, 10000.0, 80000.0, (value) {
+                        _updateIblIntensity(value);
+                      }),
+                      
+                      const SizedBox(height: 8),
+                      // IBL 强度预设
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _buildIblPresetButton('柔和', 20000.0),
+                          _buildIblPresetButton('标准', 30000.0),
+                          _buildIblPresetButton('明亮', 50000.0),
+                          _buildIblPresetButton('强烈', 70000.0),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildIblPresetButton(String label, double intensity) {
+    final isSelected = (_iblIntensity - intensity).abs() < 1000;
+    return ElevatedButton(
+      onPressed: () => _updateIblIntensity(intensity),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isSelected ? Colors.green.withValues(alpha: 0.3) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+      child: Text(label),
+    );
+  }
+
   String _getShadowTypeName(ShadowType type) {
     switch (type) {
       case ShadowType.PCF:
@@ -490,85 +977,70 @@ class _ThermionDemoState extends State<ThermionDemo>
               });
             },
           ),
+          IconButton(
+            icon: const Icon(Icons.tune),
+            onPressed: () {
+              setState(() {
+                _showControlPanel = !_showControlPanel;
+              });
+            },
+          ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          // 折叠控制面板
-          _buildControlPanel(),
-          
-          // 3D 视图 - 占据剩余空间
-          Expanded(
-            child: Stack(
-              children: [
-                StableViewerWidget(
-                  onViewerAvailable: (viewer) async {
-                    _viewer = viewer;
-                    debugPrint('🚀 Thermion 3D 渲染系统初始化...');
+          // 3D 视图 - 全屏显示
+          StableViewerWidget(
+            onViewerAvailable: (viewer) async {
+              _viewer = viewer;
+              debugPrint('🚀 Thermion 3D 渲染系统初始化...');
 
-                    // 设置相机到当前位置
-                    await _updateCamera();
+              // 设置相机到当前位置
+              await _updateCamera();
 
-                    // 启用后处理和阴影
-                    await viewer.setPostProcessing(true);
-                    await viewer.setShadowsEnabled(_shadowsEnabled);
-                    await viewer.setShadowType(_currentShadowType);
-                    await viewer.setSoftShadowOptions(_penumbraScale, _penumbraRatioScale);
+              // 启用后处理和阴影
+              await viewer.setPostProcessing(true);
+              await viewer.setShadowsEnabled(_shadowsEnabled);
+              await viewer.setShadowType(_currentShadowType);
+              await viewer.setSoftShadowOptions(_penumbraScale, _penumbraRatioScale);
 
-                    // 清除默认光照
-                    await viewer.destroyLights();
+              // 初始化优化的暖光照明系统
+              await _initializeLighting();
 
-                    // 专业三点光照系统
-                    await viewer.addDirectLight(DirectLight.sun(
-                      color: 5800.0,
-                      intensity: 100000.0,
-                      direction: v.Vector3(0.6, -0.9, -0.5).normalized(),
-                      castShadows: true,
-                      sunAngularRadius: 0.8,
-                    ));
-
-                    await viewer.addDirectLight(DirectLight.sun(
-                      color: 6200.0,
-                      intensity: 20000.0,
-                      direction: v.Vector3(-0.6, -0.3, -0.8).normalized(),
-                      castShadows: false,
-                    ));
-
-                    await viewer.addDirectLight(DirectLight.sun(
-                      color: 7000.0,
-                      intensity: 25000.0,
-                      direction: v.Vector3(-0.2, 0.1, 0.9).normalized(),
-                      castShadows: false,
-                    ));
-
-                    await viewer.setRendering(true);
-                    debugPrint('✅ Thermion 3D 渲染系统设置完成');
-                  },
-                ),
-                
-                // FPS 显示
-                if (_showFpsOverlay)
-                  Positioned(
-                    top: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.7),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        'FPS: ${_fps.toStringAsFixed(1)}',
-                        style: TextStyle(
-                          color: _getFpsColor(_fps),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+              await viewer.setRendering(true);
+              
+              // 标记初始化完成
+              setState(() {
+                _viewerInitialized = true;
+              });
+              
+              debugPrint('✅ Thermion 3D 渲染系统设置完成');
+            },
           ),
+          
+          // FPS 显示
+          if (_showFpsOverlay)
+            Positioned(
+              top: 16,
+              right: 16,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'FPS: ${_fps.toStringAsFixed(1)}',
+                  style: TextStyle(
+                    color: _getFpsColor(_fps),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+          
+          // 悬浮控制面板
+          _buildFloatingControlPanel(),
         ],
       ),
     );
