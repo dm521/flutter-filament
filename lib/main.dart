@@ -40,6 +40,9 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   bool _isControlPanelOpen = false;
   late AnimationController _animationController;
   
+  // 相机动画控制
+  bool _isCameraAnimating = false;
+  
   // 相机控制
   final double _cameraX = 0.0;
   final double _cameraY = 1.5; // 修正为与旋转一致
@@ -57,13 +60,12 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   final bool _useSphericalCamera = true; // 使用球坐标控制
   
   // HDR 环境控制 - 配合天空HDR优化
-  final double _iblIntensity = 30000.0;  // 降低IBL强度，避免过亮
+  double _iblIntensity = 30000.0;  // 可调节IBL强度
   
-  // 光照控制 - 偏黄暖光优化
-  final bool _warmLightEnabled = true;
-  final double _faceWarmIntensity = 18000.0;  // 脸部光照强度
-  final double _legWarmIntensity = 12000.0;   // 腿部光照强度
-  final double _warmColorTemp = 2800.0;       // 偏黄的暖色温，营造温暖肤色
+  // 画质预设系统
+  String _currentQuality = 'high';  // high/medium/low
+  
+
 
   @override
   void initState() {
@@ -79,7 +81,30 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   void dispose() {
     _fpsTimer?.cancel();
     _animationController.dispose();
+    
+    // 🧹 完善资源清理
+    _cleanupResources();
+    
     super.dispose();
+  }
+  
+  // 🧹 资源清理方法
+  Future<void> _cleanupResources() async {
+    try {
+      if (_viewer != null) {
+        debugPrint('🧹 开始清理3D资源...');
+        
+        // 停止渲染
+        await _viewer!.setRendering(false);
+        
+        // 清理所有光照
+        await _viewer!.destroyLights();
+        
+        debugPrint('✅ 3D资源清理完成');
+      }
+    } catch (e) {
+      debugPrint('❌ 资源清理失败: $e');
+    }
   }
 
   void _startFpsMonitoring() {
@@ -127,9 +152,9 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     }
   }
 
-  // 球坐标相机更新（从 HDR 环境测试迁移）
-  Future<void> _updateSphericalCamera() async {
-    if (_viewer == null) return;
+  // 🎬 带动画的球坐标相机更新
+  Future<void> _updateSphericalCamera({bool animate = false}) async {
+    if (_viewer == null || _isCameraAnimating) return;
     
     try {
       // 将球坐标转换为笛卡尔坐标
@@ -140,21 +165,49 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
       final double y = _cameraRadius * math.cos(phiRad);
       final double z = _cameraRadius * math.sin(phiRad) * math.sin(thetaRad);
 
-      final v.Vector3 cameraPos = v.Vector3(x, y, z);
-      final v.Vector3 focusPoint = v.Vector3(0.0, _focusY, 0.0); // 使用可调节的焦点Y坐标
+      final v.Vector3 targetPos = v.Vector3(x, y, z);
+      final v.Vector3 focusPoint = v.Vector3(0.0, _focusY, 0.0);
       final v.Vector3 upVector = v.Vector3(0.0, 1.0, 0.0);
 
       debugPrint('📍 球坐标相机: R=${_cameraRadius.toStringAsFixed(1)}m, θ=${_cameraTheta.toStringAsFixed(0)}°, φ=${_cameraPhi.toStringAsFixed(0)}°');
-      debugPrint('📍 笛卡尔坐标: (${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)}, ${z.toStringAsFixed(2)})');
 
       final camera = await _viewer!.getActiveCamera();
-      await camera.lookAt(
-        cameraPos,
-        focus: focusPoint,
-        up: upVector,
-      );
+      
+      if (animate) {
+        // 🎬 250ms 插值动画
+        _isCameraAnimating = true;
+        
+        // 获取当前位置
+        final currentPos = await camera.getPosition();
+        
+        // 创建插值动画参数
+        const steps = 10;
+        const stepDuration = Duration(milliseconds: 25);
+        
+        for (int i = 1; i <= steps; i++) {
+          final t = i / steps;
+          // 使用 easeInOut 缓动函数
+          final easedT = t * t * (3.0 - 2.0 * t);
+          
+          final interpolatedPos = v.Vector3(
+            currentPos.x + (targetPos.x - currentPos.x) * easedT,
+            currentPos.y + (targetPos.y - currentPos.y) * easedT,
+            currentPos.z + (targetPos.z - currentPos.z) * easedT,
+          );
+          
+          await camera.lookAt(interpolatedPos, focus: focusPoint, up: upVector);
+          await Future.delayed(stepDuration);
+        }
+        
+        _isCameraAnimating = false;
+      } else {
+        // 直接切换
+        await camera.lookAt(targetPos, focus: focusPoint, up: upVector);
+      }
+      
     } catch (e) {
       debugPrint('❌ 球坐标相机更新失败: $e');
+      _isCameraAnimating = false;
     }
   }
 
@@ -164,13 +217,30 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     
     try {
       debugPrint('🔄 更新 IBL 强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
-      await _viewer!.loadIbl(
-        'assets/environments/default_env_ibl.ktx',
-        intensity: _iblIntensity,
-        destroyExisting: true
-      );
+      
+      // 🛡️ 安全的 IBL 加载 - 优先使用天空HDR，回退到默认
+      String iblPath = 'assets/environments/sky_output_2048_ibl.ktx';
+      
+      try {
+        await _viewer!.loadIbl(
+          iblPath,
+          intensity: _iblIntensity,
+          destroyExisting: true
+        );
+        debugPrint('✅ 天空HDR加载成功');
+      } catch (skyError) {
+        debugPrint('⚠️ 天空HDR加载失败，回退到默认: $skyError');
+        // 回退到默认环境
+        await _viewer!.loadIbl(
+          'assets/environments/default_env_ibl.ktx',
+          intensity: _iblIntensity,
+          destroyExisting: true
+        );
+        debugPrint('✅ 默认HDR加载成功');
+      }
+      
     } catch (e) {
-      debugPrint('❌ IBL 强度更新失败: $e');
+      debugPrint('❌ IBL 强度更新完全失败: $e');
     }
   }
 
@@ -182,47 +252,24 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
       // 清除现有光照
       await _viewer!.destroyLights();
       
-      // 1. 主光源 - 偏黄暖光
+      // 🌟 精简高质量光照系统 - 仅2盏灯
+      
+      // 1. 主光源 - 唯一投影光源，模拟太阳光
       await _viewer!.addDirectLight(DirectLight.sun(
-        color: 3800.0,  // 更黄的暖光 (原4800 → 3800)
-        intensity: 45000.0,
-        direction: v.Vector3(0.3, -0.7, -0.5).normalized(),
-        castShadows: true,
-        sunAngularRadius: 1.5,
+        color: 3600.0,  // 温暖的黄光
+        intensity: 55000.0,  // 提高强度补偿减少的灯光
+        direction: v.Vector3(0.4, -0.8, -0.3).normalized(),  // 优化角度
+        castShadows: true,  // 唯一投影光源
+        sunAngularRadius: 2.0,  // 增加柔和度
       ));
 
-      // 2. 脸部柔光 - 温暖黄光
-      if (_warmLightEnabled) {
-        await _viewer!.addDirectLight(DirectLight.point(
-          color: 2800.0,  // 很暖的黄光 (原3200 → 2800)
-          intensity: 18000.0,
-          position: v.Vector3(0.0, 1.3, 1.8),
-          falloffRadius: 3.5,
-        ));
-
-        // 3. 腿部自然光 - 黄调肤色光
-        await _viewer!.addDirectLight(DirectLight.point(
-          color: 3200.0,  // 偏黄的肤色光 (原3800 → 3200)
-          intensity: 12000.0,
-          position: v.Vector3(0.0, 0.4, 1.5),
-          falloffRadius: 2.8,
-        ));
-      }
-
-      // 4. 环境填充光 - 保持天空色调
+      // 2. 补光 - 柔和填充光，模拟天空漫反射
       await _viewer!.addDirectLight(DirectLight.sun(
-        color: 4500.0,  // 稍微偏黄的天空光 (原5200 → 4500)
-        intensity: 8000.0,
-        direction: v.Vector3(-0.4, -0.1, -0.6).normalized(),
-        castShadows: false,
-      ));
-
-      // 5. 轮廓光 - 温暖轮廓
-      await _viewer!.addDirectLight(DirectLight.sun(
-        color: 4200.0,  // 偏黄的轮廓光 (原5500 → 4200)
-        intensity: 12000.0,
-        direction: v.Vector3(-0.1, 0.2, 0.8).normalized(),
-        castShadows: false,
+        color: 4200.0,  // 稍冷的补光平衡色温
+        intensity: 15000.0,  // 适中强度
+        direction: v.Vector3(-0.5, -0.2, 0.7).normalized(),  // 从侧后方补光
+        castShadows: false,  // 不投影，避免多重阴影
+        sunAngularRadius: 3.0,  // 很柔和的补光
       ));
       
     } catch (e) {
@@ -268,6 +315,46 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
       _animationController.forward();
     } else {
       _animationController.reverse();
+    }
+  }
+
+  // 🎮 画质预设系统
+  Future<void> _setQuality(String quality) async {
+    if (_viewer == null) return;
+    
+    setState(() {
+      _currentQuality = quality;
+    });
+    
+    try {
+      switch (quality) {
+        case 'high':
+          await _viewer!.setShadowType(ShadowType.PCSS);
+          await _viewer!.setSoftShadowOptions(2.5, 0.4);
+          _iblIntensity = 35000.0;
+          debugPrint('🔥 高画质模式: PCSS阴影 + 高强度IBL');
+          break;
+        case 'medium':
+          await _viewer!.setShadowType(ShadowType.DPCF);
+          await _viewer!.setSoftShadowOptions(2.0, 0.5);
+          _iblIntensity = 25000.0;
+          debugPrint('⚡ 中画质模式: DPCF阴影 + 中强度IBL');
+          break;
+        case 'low':
+          await _viewer!.setShadowType(ShadowType.PCF);
+          await _viewer!.setSoftShadowOptions(1.5, 0.6);
+          _iblIntensity = 20000.0;
+          debugPrint('📱 低画质模式: PCF阴影 + 低强度IBL');
+          break;
+      }
+      
+      // 🔄 重新加载IBL应用新强度（仅在初始化后）
+      if (_viewer != null) {
+        await _updateIblIntensity();
+      }
+      
+    } catch (e) {
+      debugPrint('❌ 画质设置失败: $e');
     }
   }
 
@@ -341,7 +428,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                         isActive: _cameraTheta == 90,
                         onPressed: () {
                           setState(() { _cameraTheta = 90; });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);  // 启用动画
                         },
                       ),
                       _buildControlButton(
@@ -350,7 +437,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                         isActive: _cameraTheta == 180,
                         onPressed: () {
                           setState(() { _cameraTheta = 180; });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);
                         },
                       ),
                       _buildControlButton(
@@ -359,7 +446,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                         isActive: _cameraTheta == 270,
                         onPressed: () {
                           setState(() { _cameraTheta = 270; });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);
                         },
                       ),
                       _buildControlButton(
@@ -368,7 +455,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                         isActive: _cameraTheta == 0,
                         onPressed: () {
                           setState(() { _cameraTheta = 0; });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);
                         },
                       ),
                     ],
@@ -430,6 +517,38 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                   
                   const SizedBox(height: 16),
                   
+                  // 画质设置组
+                  const Text(
+                    '画质设置',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildControlButton(
+                        label: '🔥 高',
+                        color: Colors.red,
+                        isActive: _currentQuality == 'high',
+                        onPressed: () => _setQuality('high'),
+                      ),
+                      _buildControlButton(
+                        label: '⚡ 中',
+                        color: Colors.orange,
+                        isActive: _currentQuality == 'medium',
+                        onPressed: () => _setQuality('medium'),
+                      ),
+                      _buildControlButton(
+                        label: '📱 低',
+                        color: Colors.green,
+                        isActive: _currentQuality == 'low',
+                        onPressed: () => _setQuality('low'),
+                      ),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
                   // 构图预设组
                   const Text(
                     '构图预设',
@@ -449,7 +568,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                             _cameraPhi = 75.0;
                             _focusY = 0.6;
                           });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);
                         },
                       ),
                       _buildControlButton(
@@ -460,7 +579,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                             _cameraRadius = 3.8;
                             _cameraPhi = 78.0;
                           });
-                          _updateSphericalCamera();
+                          _updateSphericalCamera(animate: true);
                         },
                       ),
                       _buildControlButton(
@@ -516,33 +635,38 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
             onViewerAvailable: (viewer) async {
               _viewer = viewer;
               debugPrint('🚀 Thermion 3D 渲染系统初始化...');
+              debugPrint('📱 设备信息: ${MediaQuery.of(context).size}');
 
-              // 等待初始化
-              await Future.delayed(const Duration(milliseconds: 300));
-
-              // 设置相机（使用球坐标）
-              if (_useSphericalCamera) {
-                await _updateSphericalCamera();
-              } else {
-                await _updateCamera();
-              }
-
-              // 启用基本设置
+              // 🚀 分阶段初始化，确保稳定性
+              
+              // 阶段1: 等待基础初始化
+              await Future.delayed(const Duration(milliseconds: 500));
+              
+              // 阶段2: 启用渲染设置
               await viewer.setPostProcessing(true);
               await viewer.setShadowsEnabled(true);
-              await viewer.setShadowType(ShadowType.PCSS);
-
-              // 更新 HDR 环境
-              await _updateIblIntensity();
-
-              // 初始化光照
+              
+              // 阶段3: 设置画质（包含IBL）
+              await _setQuality('high');
+              
+              // 阶段4: 等待渲染管线稳定
+              await Future.delayed(const Duration(milliseconds: 200));
+              
+              // 阶段5: 初始化光照
               await _initializeLighting();
+              
+              // 阶段6: 设置相机
+              await _updateSphericalCamera();
 
+              // 阶段7: 启用渲染
               await viewer.setRendering(true);
+
               
               debugPrint('✅ Thermion 3D 渲染系统设置完成');
               debugPrint('📊 HDR 环境坐标系统: θ=0°(+Z正面), θ=180°(-Z背面)');
               debugPrint('📊 当前相机角度: θ=$_cameraTheta° (${_cameraTheta == 0 ? "看向HDR正面" : _cameraTheta == 180 ? "看向HDR背面" : "侧面视角"})');
+              debugPrint('🎮 当前画质: $_currentQuality');
+              debugPrint('💡 IBL强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
             },
           ),
           
