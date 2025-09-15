@@ -221,7 +221,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
 
       // 重新加载 IBL 以应用新强度
       await _viewer!.loadIbl(
-        'assets/environments/sky_output_2048_ibl.ktx',
+        'assets/environments/sky_output_1024_ibl.ktx',
         intensity: _iblIntensity,
         destroyExisting: true
       );
@@ -692,11 +692,11 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
               await viewer.setShadowsEnabled(true);
 
               // 阶段3: 加载天空盒（先加载天空盒）
-              await viewer.loadSkybox('assets/environments/sky_output_2048_skybox.ktx');
+              await viewer.loadSkybox('assets/environments/sky_env_skybox.ktx');
 
               // 阶段4: 加载 IBL 并设置强度
               await viewer.loadIbl(
-                'assets/environments/sky_output_2048_ibl.ktx',
+                'assets/environments/sky_output_1024_ibl.ktx',
                 intensity: _iblIntensity,  // 使用默认 IBL 强度
                 destroyExisting: true,
               );
