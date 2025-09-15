@@ -26,7 +26,7 @@ class ThermionDemo extends StatefulWidget {
   State<ThermionDemo> createState() => _ThermionDemoState();
 }
 
-class _ThermionDemoState extends State<ThermionDemo> {
+class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMixin {
   
   // 核心变量
   ThermionViewer? _viewer;
@@ -36,32 +36,49 @@ class _ThermionDemoState extends State<ThermionDemo> {
   Timer? _fpsTimer;
   bool _showFpsOverlay = true;
   
-  // 相机控制
-  double _cameraX = 0.0;
-  double _cameraY = 0.6; // 修正为与旋转一致
-  double _cameraZ = 3.0;
-  double _focusX = 0.0;
-  double _focusY = 0.6;
-  double _focusZ = 0.0;
+  // 悬浮按钮控制
+  bool _isControlPanelOpen = false;
+  late AnimationController _animationController;
   
-  // 水平旋转控制
-  double _horizontalRotation = 0.0;
+  // 相机控制
+  final double _cameraX = 0.0;
+  final double _cameraY = 1.5; // 修正为与旋转一致
+  final double _cameraZ = 3.2;
+  final double _focusX = 0.0;
+  double _focusY = 0.60;       // 焦点Y坐标 - 可调节，用于球坐标相机
+  final double _focusZ = 0.0;
+  
+
+  
+  // 球坐标相机控制 - 基于最佳全身照角度优化
+  double _cameraRadius = 3.2;  // 🎯 最佳距离 - 完美全身照构图
+  double _cameraTheta = 90.0;  // 🎯 最佳水平角度 - 人物正面
+  double _cameraPhi = 75.0;   // 🎯 最佳垂直角度 - 理想俯视角度
+  final bool _useSphericalCamera = true; // 使用球坐标控制
+  
+  // HDR 环境控制
+  final double _iblIntensity = 50000.0;
   
   // 光照控制
-  bool _warmLightEnabled = true;
-  double _faceWarmIntensity = 35000.0;
-  double _legWarmIntensity = 25000.0;
-  double _warmColorTemp = 4800.0;
+  final bool _warmLightEnabled = true;
+  final double _faceWarmIntensity = 35000.0;
+  final double _legWarmIntensity = 25000.0;
+  final double _warmColorTemp = 4800.0;
 
   @override
   void initState() {
     super.initState();
     _startFpsMonitoring();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
   }
 
   @override
   void dispose() {
     _fpsTimer?.cancel();
+    _animationController.dispose();
     super.dispose();
   }
 
@@ -110,21 +127,51 @@ class _ThermionDemoState extends State<ThermionDemo> {
     }
   }
 
-  // 水平旋转控制
-  void _updateHorizontalRotation(double angle) {
-    setState(() {
-      _horizontalRotation = angle;
-      
-      // 计算圆形轨道上的相机位置
-      final radius = 3.0;
-      final radians = angle * (math.pi / 180);
-      
-      _cameraX = radius * math.sin(radians);
-      _cameraZ = radius * math.cos(radians);
-      _cameraY = 0.6;
-    });
+  // 球坐标相机更新（从 HDR 环境测试迁移）
+  Future<void> _updateSphericalCamera() async {
+    if (_viewer == null) return;
     
-    _updateCamera();
+    try {
+      // 将球坐标转换为笛卡尔坐标
+      final double thetaRad = _cameraTheta * (math.pi / 180.0);
+      final double phiRad = _cameraPhi * (math.pi / 180.0);
+
+      final double x = _cameraRadius * math.sin(phiRad) * math.cos(thetaRad);
+      final double y = _cameraRadius * math.cos(phiRad);
+      final double z = _cameraRadius * math.sin(phiRad) * math.sin(thetaRad);
+
+      final v.Vector3 cameraPos = v.Vector3(x, y, z);
+      final v.Vector3 focusPoint = v.Vector3(0.0, _focusY, 0.0); // 使用可调节的焦点Y坐标
+      final v.Vector3 upVector = v.Vector3(0.0, 1.0, 0.0);
+
+      debugPrint('📍 球坐标相机: R=${_cameraRadius.toStringAsFixed(1)}m, θ=${_cameraTheta.toStringAsFixed(0)}°, φ=${_cameraPhi.toStringAsFixed(0)}°');
+      debugPrint('📍 笛卡尔坐标: (${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)}, ${z.toStringAsFixed(2)})');
+
+      final camera = await _viewer!.getActiveCamera();
+      await camera.lookAt(
+        cameraPos,
+        focus: focusPoint,
+        up: upVector,
+      );
+    } catch (e) {
+      debugPrint('❌ 球坐标相机更新失败: $e');
+    }
+  }
+
+  // HDR 环境控制方法
+  Future<void> _updateIblIntensity() async {
+    if (_viewer == null) return;
+    
+    try {
+      debugPrint('🔄 更新 IBL 强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
+      await _viewer!.loadIbl(
+        'assets/environments/default_env_ibl.ktx',
+        intensity: _iblIntensity,
+        destroyExisting: true
+      );
+    } catch (e) {
+      debugPrint('❌ IBL 强度更新失败: $e');
+    }
   }
 
   // 光照系统初始化
@@ -189,6 +236,255 @@ class _ThermionDemoState extends State<ThermionDemo> {
     return Colors.red;
   }
 
+  String _getViewAngleDescription(double theta) {
+    // 根据实际人物朝向重新定义角度描述
+    if (theta == 90) return '正面视角';  // 90度是人物正面
+    if (theta == 180) return '右侧视角';
+    if (theta == 270) return '背面视角';
+    if (theta == 0 || theta == 360) return '左侧视角';
+    
+    if (theta > 90 && theta < 180) return '右前方';
+    if (theta > 180 && theta < 270) return '右后方';
+    if (theta > 270 && theta < 360) return '左后方';
+    if (theta > 0 && theta < 90) return '左前方';
+    
+    return '自定义角度';
+  }
+
+  Color _getViewAngleColor(double theta) {
+    if (theta == 90) return Colors.green;   // 正面 - 绿色
+    if (theta == 180) return Colors.cyan;   // 右侧 - 青色
+    if (theta == 270) return Colors.orange; // 背面 - 橙色
+    if (theta == 0 || theta == 360) return Colors.purple; // 左侧 - 紫色
+    return Colors.blue;
+  }
+
+  void _toggleControlPanel() {
+    setState(() {
+      _isControlPanelOpen = !_isControlPanelOpen;
+    });
+    
+    if (_isControlPanelOpen) {
+      _animationController.forward();
+    } else {
+      _animationController.reverse();
+    }
+  }
+
+  Widget _buildControlButton({
+    required String label,
+    required void Function() onPressed,
+    required Color color,
+    bool isActive = false,
+  }) {
+    return Container(
+      margin: const EdgeInsets.all(4),
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isActive ? color : color.withValues(alpha: 0.7),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(25),
+          ),
+          elevation: isActive ? 8 : 4,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingControlPanel() {
+    return AnimatedBuilder(
+      animation: _animationController,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _animationController.value,
+          child: Opacity(
+            opacity: _animationController.value,
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 80),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    blurRadius: 15,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 角度控制组
+                  const Text(
+                    '视角控制',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildControlButton(
+                        label: '正面',
+                        color: Colors.green,
+                        isActive: _cameraTheta == 90,
+                        onPressed: () {
+                          setState(() { _cameraTheta = 90; });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '右侧',
+                        color: Colors.cyan,
+                        isActive: _cameraTheta == 180,
+                        onPressed: () {
+                          setState(() { _cameraTheta = 180; });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '背面',
+                        color: Colors.orange,
+                        isActive: _cameraTheta == 270,
+                        onPressed: () {
+                          setState(() { _cameraTheta = 270; });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '左侧',
+                        color: Colors.purple,
+                        isActive: _cameraTheta == 0,
+                        onPressed: () {
+                          setState(() { _cameraTheta = 0; });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // 距离和焦点控制组
+                  const Text(
+                    '距离调节',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildControlButton(
+                        label: '近',
+                        color: Colors.teal,
+                        onPressed: () {
+                          setState(() {
+                            _cameraRadius = _cameraRadius > 2.0 ? _cameraRadius - 0.2 : 1.8;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '远',
+                        color: Colors.teal,
+                        onPressed: () {
+                          setState(() {
+                            _cameraRadius = _cameraRadius < 4.2 ? _cameraRadius + 0.2 : 4.5;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '上',
+                        color: Colors.amber,
+                        onPressed: () {
+                          setState(() {
+                            _focusY = _focusY < 0.9 ? _focusY + 0.05 : 1.0;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '下',
+                        color: Colors.amber,
+                        onPressed: () {
+                          setState(() {
+                            _focusY = _focusY > 0.1 ? _focusY - 0.05 : 0.0;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 16),
+                  
+                  // 构图预设组
+                  const Text(
+                    '构图预设',
+                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildControlButton(
+                        label: '🎯 最佳',
+                        color: Colors.green,
+                        isActive: _cameraRadius == 3.2 && _cameraPhi == 75.0,
+                        onPressed: () {
+                          setState(() {
+                            _cameraRadius = 3.2;
+                            _cameraPhi = 75.0;
+                            _focusY = 0.6;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '全身',
+                        color: Colors.indigo,
+                        onPressed: () {
+                          setState(() {
+                            _cameraRadius = 3.8;
+                            _cameraPhi = 78.0;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                      _buildControlButton(
+                        label: '半身',
+                        color: Colors.indigo,
+                        onPressed: () {
+                          setState(() {
+                            _cameraRadius = 2.2;
+                            _cameraPhi = 72.0;
+                          });
+                          _updateSphericalCamera();
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -212,8 +508,8 @@ class _ThermionDemoState extends State<ThermionDemo> {
           // 3D 视图
           ViewerWidget(
             assetPath: 'assets/models/2D_Girl.glb',
-            iblPath: 'assets/environments/studio_small_03_1024_ibl.ktx',
-            skyboxPath: 'assets/environments/studio_small_03_1024_skybox.ktx',
+            iblPath: 'assets/environments/default_env_ibl.ktx',
+            skyboxPath: 'assets/environments/default_env_skybox.ktx',
             transformToUnitCube: true,
             manipulatorType: ManipulatorType.NONE,
             //background: const Color(0xFF404040),
@@ -221,13 +517,23 @@ class _ThermionDemoState extends State<ThermionDemo> {
               _viewer = viewer;
               debugPrint('🚀 Thermion 3D 渲染系统初始化...');
 
-              // 设置相机
-              await _updateCamera();
+              // 等待初始化
+              await Future.delayed(const Duration(milliseconds: 300));
+
+              // 设置相机（使用球坐标）
+              if (_useSphericalCamera) {
+                await _updateSphericalCamera();
+              } else {
+                await _updateCamera();
+              }
 
               // 启用基本设置
               await viewer.setPostProcessing(true);
               await viewer.setShadowsEnabled(true);
               await viewer.setShadowType(ShadowType.PCSS);
+
+              // 更新 HDR 环境
+              await _updateIblIntensity();
 
               // 初始化光照
               await _initializeLighting();
@@ -235,10 +541,12 @@ class _ThermionDemoState extends State<ThermionDemo> {
               await viewer.setRendering(true);
               
               debugPrint('✅ Thermion 3D 渲染系统设置完成');
+              debugPrint('📊 HDR 环境坐标系统: θ=0°(+Z正面), θ=180°(-Z背面)');
+              debugPrint('📊 当前相机角度: θ=$_cameraTheta° (${_cameraTheta == 0 ? "看向HDR正面" : _cameraTheta == 180 ? "看向HDR背面" : "侧面视角"})');
             },
           ),
           
-          // FPS 显示
+          // 调试信息显示
           if (_showFpsOverlay)
             Positioned(
               top: 16,
@@ -249,90 +557,68 @@ class _ThermionDemoState extends State<ThermionDemo> {
                   color: Colors.black.withValues(alpha: 0.7),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  'FPS: ${_fps.toStringAsFixed(1)}',
-                  style: TextStyle(
-                    color: _getFpsColor(_fps),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ),
-          
-          // 底部水平旋转控制条
-          Positioned(
-            bottom: 20,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.8),
-                borderRadius: BorderRadius.circular(25),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.rotate_right,
-                        color: Colors.white,
-                        size: 20,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'FPS: ${_fps.toStringAsFixed(1)}',
+                      style: TextStyle(
+                        color: _getFpsColor(_fps),
+                        fontWeight: FontWeight.bold,
                       ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        '水平旋转',
+                    ),
+                    if (_useSphericalCamera) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'R=${_cameraRadius.toStringAsFixed(1)}m θ=${_cameraTheta.toStringAsFixed(0)}°',
+                        style: const TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                      Text(
+                        'φ=${_cameraPhi.toStringAsFixed(0)}° Focus=${_focusY.toStringAsFixed(1)}',
+                        style: const TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                      Text(
+                        'IBL=${(_iblIntensity/1000).toStringAsFixed(0)}K',
+                        style: const TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                      Text(
+                        _getViewAngleDescription(_cameraTheta),
                         style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const Spacer(),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          '${_horizontalRotation.toStringAsFixed(0)}°',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          color: _getViewAngleColor(_cameraTheta),
+                          fontSize: 10,
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 8),
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      activeTrackColor: Colors.blue,
-                      inactiveTrackColor: Colors.grey[600],
-                      thumbColor: Colors.blue,
-                      overlayColor: Colors.blue.withValues(alpha: 0.2),
-                      trackHeight: 4,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-                    ),
-                    child: Slider(
-                      value: _horizontalRotation,
-                      min: 0,
-                      max: 360,
-                      divisions: 72,
-                      onChanged: _updateHorizontalRotation,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
+              ),
+            ),
+
+
+          
+          // 悬浮控制面板
+          if (_isControlPanelOpen)
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: _buildFloatingControlPanel(),
+            ),
+          
+          // 主悬浮按钮
+          Positioned(
+            bottom: 20,
+            right: 20,
+            child: FloatingActionButton(
+              onPressed: _toggleControlPanel,
+              backgroundColor: Colors.blue.withValues(alpha: 0.9),
+              child: AnimatedRotation(
+                turns: _isControlPanelOpen ? 0.125 : 0,
+                duration: const Duration(milliseconds: 300),
+                child: Icon(
+                  _isControlPanelOpen ? Icons.close : Icons.camera_alt,
+                  color: Colors.white,
+                ),
               ),
             ),
           ),
