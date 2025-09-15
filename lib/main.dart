@@ -56,14 +56,14 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   double _cameraPhi = 75.0;   // 🎯 最佳垂直角度 - 理想俯视角度
   final bool _useSphericalCamera = true; // 使用球坐标控制
   
-  // HDR 环境控制
-  final double _iblIntensity = 50000.0;
+  // HDR 环境控制 - 配合天空HDR优化
+  final double _iblIntensity = 30000.0;  // 降低IBL强度，避免过亮
   
-  // 光照控制
+  // 光照控制 - 偏黄暖光优化
   final bool _warmLightEnabled = true;
-  final double _faceWarmIntensity = 35000.0;
-  final double _legWarmIntensity = 25000.0;
-  final double _warmColorTemp = 4800.0;
+  final double _faceWarmIntensity = 18000.0;  // 脸部光照强度
+  final double _legWarmIntensity = 12000.0;   // 腿部光照强度
+  final double _warmColorTemp = 2800.0;       // 偏黄的暖色温，营造温暖肤色
 
   @override
   void initState() {
@@ -182,46 +182,46 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
       // 清除现有光照
       await _viewer!.destroyLights();
       
-      // 1. 主光源
+      // 1. 主光源 - 偏黄暖光
       await _viewer!.addDirectLight(DirectLight.sun(
-        color: 5600.0,
-        intensity: 70000.0,
-        direction: v.Vector3(0.5, -0.8, -0.6).normalized(),
+        color: 3800.0,  // 更黄的暖光 (原4800 → 3800)
+        intensity: 45000.0,
+        direction: v.Vector3(0.3, -0.7, -0.5).normalized(),
         castShadows: true,
-        sunAngularRadius: 1.2,
+        sunAngularRadius: 1.5,
       ));
 
-      // 2. 脸部暖光
+      // 2. 脸部柔光 - 温暖黄光
       if (_warmLightEnabled) {
         await _viewer!.addDirectLight(DirectLight.point(
-          color: _warmColorTemp,
-          intensity: _faceWarmIntensity,
-          position: v.Vector3(0.0, 1.4, 2.2),
-          falloffRadius: 4.5,
+          color: 2800.0,  // 很暖的黄光 (原3200 → 2800)
+          intensity: 18000.0,
+          position: v.Vector3(0.0, 1.3, 1.8),
+          falloffRadius: 3.5,
         ));
 
-        // 3. 腿部补光
+        // 3. 腿部自然光 - 黄调肤色光
         await _viewer!.addDirectLight(DirectLight.point(
-          color: _warmColorTemp + 200,
-          intensity: _legWarmIntensity,
-          position: v.Vector3(0.0, 0.6, 1.9),
-          falloffRadius: 3.8,
+          color: 3200.0,  // 偏黄的肤色光 (原3800 → 3200)
+          intensity: 12000.0,
+          position: v.Vector3(0.0, 0.4, 1.5),
+          falloffRadius: 2.8,
         ));
       }
 
-      // 4. 填充光
+      // 4. 环境填充光 - 保持天空色调
       await _viewer!.addDirectLight(DirectLight.sun(
-        color: 5800.0,
-        intensity: 16000.0,
-        direction: v.Vector3(-0.6, -0.2, -0.8).normalized(),
+        color: 4500.0,  // 稍微偏黄的天空光 (原5200 → 4500)
+        intensity: 8000.0,
+        direction: v.Vector3(-0.4, -0.1, -0.6).normalized(),
         castShadows: false,
       ));
 
-      // 5. 轮廓光
+      // 5. 轮廓光 - 温暖轮廓
       await _viewer!.addDirectLight(DirectLight.sun(
-        color: 6800.0,
-        intensity: 22000.0,
-        direction: v.Vector3(-0.2, 0.1, 0.9).normalized(),
+        color: 4200.0,  // 偏黄的轮廓光 (原5500 → 4200)
+        intensity: 12000.0,
+        direction: v.Vector3(-0.1, 0.2, 0.8).normalized(),
         castShadows: false,
       ));
       
@@ -508,8 +508,8 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
           // 3D 视图
           ViewerWidget(
             assetPath: 'assets/models/2D_Girl.glb',
-            iblPath: 'assets/environments/default_env_ibl.ktx',
-            skyboxPath: 'assets/environments/default_env_skybox.ktx',
+            iblPath: 'assets/environments/sky_output_2048_ibl.ktx',
+            skyboxPath: 'assets/environments/sky_output_2048_skybox.ktx',
             transformToUnitCube: true,
             manipulatorType: ManipulatorType.NONE,
             //background: const Color(0xFF404040),
