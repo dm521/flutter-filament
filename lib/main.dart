@@ -59,12 +59,13 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   double _cameraPhi = 75.0;   // 🎯 最佳垂直角度 - 理想俯视角度
   final bool _useSphericalCamera = true; // 使用球坐标控制
   
-  // HDR 环境控制 - 配合天空HDR优化
-  double _iblIntensity = 30000.0;  // 可调节IBL强度
+  // HDR 环境控制 - 需要更强来匹配Three.js的AmbientLight效果
+  double _iblIntensity = 45000.0;  // 进一步提高环境光强度，模拟Three.js AmbientLight效果
   
   // 画质预设系统
   String _currentQuality = 'high';  // high/medium/low
-  
+
+
 
 
   @override
@@ -214,66 +215,79 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   // HDR 环境控制方法
   Future<void> _updateIblIntensity() async {
     if (_viewer == null) return;
-    
+
     try {
       debugPrint('🔄 更新 IBL 强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
-      
-      // 🛡️ 安全的 IBL 加载 - 优先使用天空HDR，回退到默认
-      String iblPath = 'assets/environments/sky_output_2048_ibl.ktx';
-      
-      try {
-        await _viewer!.loadIbl(
-          iblPath,
-          intensity: _iblIntensity,
-          destroyExisting: true
-        );
-        debugPrint('✅ 天空HDR加载成功');
-      } catch (skyError) {
-        debugPrint('⚠️ 天空HDR加载失败，回退到默认: $skyError');
-        // 回退到默认环境
-        await _viewer!.loadIbl(
-          'assets/environments/default_env_ibl.ktx',
-          intensity: _iblIntensity,
-          destroyExisting: true
-        );
-        debugPrint('✅ 默认HDR加载成功');
-      }
-      
+
+      // 重新加载 IBL 以应用新强度
+      await _viewer!.loadIbl(
+        'assets/environments/sky_output_2048_ibl.ktx',
+        intensity: _iblIntensity,
+        destroyExisting: true
+      );
+
     } catch (e) {
-      debugPrint('❌ IBL 强度更新完全失败: $e');
+      debugPrint('❌ IBL 强度更新失败: $e');
     }
   }
 
-  // 光照系统初始化
+  // 光照系统初始化 - 基于设计师的 Three.js 点光源配置
   Future<void> _initializeLighting() async {
     if (_viewer == null) return;
-    
+
     try {
-      // 清除现有光照
       await _viewer!.destroyLights();
-      
-      // 🌟 精简高质量光照系统 - 仅2盏灯
-      
-      // 1. 主光源 - 唯一投影光源，模拟太阳光
-      await _viewer!.addDirectLight(DirectLight.sun(
-        color: 3600.0,  // 温暖的黄光
-        intensity: 55000.0,  // 提高强度补偿减少的灯光
-        direction: v.Vector3(0.4, -0.8, -0.3).normalized(),  // 优化角度
-        castShadows: true,  // 唯一投影光源
-        sunAngularRadius: 2.0,  // 增加柔和度
+
+      debugPrint('🎨 基于灯光师配置的物理正确光照...');
+
+      // 📍 严格按照Three.js配置 + 物理衰减转换
+
+      // 1. PointLight - 头部主光 (投影光源)
+      // Three.js: 位置(-0.31, 2.07, 0.57), 强度1.92, decay=2
+      await _viewer!.addDirectLight(DirectLight.point(
+        color: 5200.0,  // 16776693 → 5200K 暖白
+        intensity: 40000.0,  // 考虑物理衰减的正确强度
+        position: v.Vector3(-0.31, 2.07, 0.57),  // 严格按原位置
+        falloffRadius: 6.0,  // 模拟decay=2的衰减
+        castShadows: true,
       ));
 
-      // 2. 补光 - 柔和填充光，模拟天空漫反射
-      await _viewer!.addDirectLight(DirectLight.sun(
-        color: 4200.0,  // 稍冷的补光平衡色温
-        intensity: 15000.0,  // 适中强度
-        direction: v.Vector3(-0.5, -0.2, 0.7).normalized(),  // 从侧后方补光
-        castShadows: false,  // 不投影，避免多重阴影
-        sunAngularRadius: 3.0,  // 很柔和的补光
+      // 2. PointLight(1) - 左侧身体光 (衣服照明关键光源)
+      // Three.js: 位置(-1.22, 0.49, 0.75), 强度2.36, 颜色偏橙红
+      // 关键：这是衣服照明的主力，偏橙红色温增强红色材质反射
+      await _viewer!.addDirectLight(DirectLight.point(
+        color: 3200.0,  // 更暖的色温，精确匹配Three.js的16709345暖橙色调
+        intensity: 120000.0,  // 大幅增强强度，专门照亮衣服材质
+        position: v.Vector3(-1.22, 0.49, 0.75),  // 左后方，通过散射照明正面
+        falloffRadius: 2.8,  // 减小衰减范围，更聚焦于衣服区域
+        castShadows: false,
       ));
-      
+
+      // 3. PointLight(2) - 右侧平衡光 (衣服右侧照明)
+      // Three.js: 位置(0.45, 0.49, 0.91), 强度1.0, 中性白
+      await _viewer!.addDirectLight(DirectLight.point(
+        color: 5800.0,  // 稍微偏暖，平衡左侧
+        intensity: 50000.0,  // 提高强度，确保右侧衣服也有足够照明
+        position: v.Vector3(0.45, 0.49, 0.91),  // 右后方位置
+        falloffRadius: 4.0,  // 与左侧匹配
+        castShadows: false,
+      ));
+
+      // 4. PointLight(3) - 背后轮廓光
+      // Three.js: 位置(0.49, 0.82, -0.46), 强度2.52, decay=2
+      await _viewer!.addDirectLight(DirectLight.point(
+        color: 5800.0,  // 16109516 → 5800K 偏粉
+        intensity: 50000.0,  // 轮廓光强度
+        position: v.Vector3(0.49, 0.82, -0.46),  // 严格按原位置：背后
+        falloffRadius: 3.0,  // 小范围轮廓
+        castShadows: false,
+      ));
+
+      debugPrint('✅ 物理正确的灯光师配置已应用');
+      debugPrint('💡 4个点光源严格按Three.js位置，考虑decay=2衰减');
+
     } catch (e) {
-      debugPrint('❌ 光照系统初始化失败: $e');
+      debugPrint('❌ 光照初始化失败: $e');
     }
   }
 
@@ -318,41 +332,71 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     }
   }
 
-  // 🎮 画质预设系统
-  Future<void> _setQuality(String quality) async {
+// 🎮 画质预设系统（初始化用 - 不重新加载IBL）
+  Future<void> _setQualityWithoutIBL(String quality) async {
     if (_viewer == null) return;
-    
+
     setState(() {
       _currentQuality = quality;
     });
-    
+
     try {
       switch (quality) {
         case 'high':
           await _viewer!.setShadowType(ShadowType.PCSS);
           await _viewer!.setSoftShadowOptions(2.5, 0.4);
-          _iblIntensity = 35000.0;
-          debugPrint('🔥 高画质模式: PCSS阴影 + 高强度IBL');
+          debugPrint('🔥 高画质模式（初始化）');
           break;
         case 'medium':
           await _viewer!.setShadowType(ShadowType.DPCF);
           await _viewer!.setSoftShadowOptions(2.0, 0.5);
-          _iblIntensity = 25000.0;
-          debugPrint('⚡ 中画质模式: DPCF阴影 + 中强度IBL');
+          debugPrint('⚡ 中画质模式（初始化）');
           break;
         case 'low':
           await _viewer!.setShadowType(ShadowType.PCF);
           await _viewer!.setSoftShadowOptions(1.5, 0.6);
-          _iblIntensity = 20000.0;
-          debugPrint('📱 低画质模式: PCF阴影 + 低强度IBL');
+          debugPrint('📱 低画质模式（初始化）');
           break;
       }
-      
-      // 🔄 重新加载IBL应用新强度（仅在初始化后）
-      if (_viewer != null) {
-        await _updateIblIntensity();
+
+    } catch (e) {
+      debugPrint('❌ 画质设置失败: $e');
+    }
+  }
+
+// 🎮 画质预设系统（用户操作用 - 会重新加载IBL）
+  Future<void> _setQuality(String quality) async {
+    if (_viewer == null) return;
+
+    setState(() {
+      _currentQuality = quality;
+    });
+
+    try {
+      switch (quality) {
+        case 'high':
+          await _viewer!.setShadowType(ShadowType.PCSS);
+          await _viewer!.setSoftShadowOptions(2.5, 0.4);
+          _iblIntensity = 25000.0;  // 对应设计师配置
+          debugPrint('🔥 高画质模式');
+          break;
+        case 'medium':
+          await _viewer!.setShadowType(ShadowType.DPCF);
+          await _viewer!.setSoftShadowOptions(2.0, 0.5);
+          _iblIntensity = 22000.0;  // 稍低
+          debugPrint('⚡ 中画质模式');
+          break;
+        case 'low':
+          await _viewer!.setShadowType(ShadowType.PCF);
+          await _viewer!.setSoftShadowOptions(1.5, 0.6);
+          _iblIntensity = 20000.0;  // 更低
+          debugPrint('📱 低画质模式');
+          break;
       }
-      
+
+      // 应用新的 IBL 强度
+      await _updateIblIntensity();
+
     } catch (e) {
       debugPrint('❌ 画质设置失败: $e');
     }
@@ -516,7 +560,7 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                   ),
                   
                   const SizedBox(height: 16),
-                  
+
                   // 画质设置组
                   const Text(
                     '画质设置',
@@ -627,11 +671,12 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
           // 3D 视图
           ViewerWidget(
             assetPath: 'assets/models/2D_Girl.glb',
-            iblPath: 'assets/environments/sky_output_2048_ibl.ktx',
-            skyboxPath: 'assets/environments/sky_output_2048_skybox.ktx',
+            // 不在这里加载 IBL 和 Skybox，改为在 onViewerAvailable 中手动控制
+            // iblPath: 'assets/environments/sky_output_2048_ibl.ktx',
+            // skyboxPath: 'assets/environments/sky_output_2048_skybox.ktx',
             transformToUnitCube: true,
             manipulatorType: ManipulatorType.NONE,
-            //background: const Color(0xFF404040),
+            //background: const Color(0xFF1A1A1A),  // 深色背景
             onViewerAvailable: (viewer) async {
               _viewer = viewer;
               debugPrint('🚀 Thermion 3D 渲染系统初始化...');
@@ -645,20 +690,30 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
               // 阶段2: 启用渲染设置
               await viewer.setPostProcessing(true);
               await viewer.setShadowsEnabled(true);
-              
-              // 阶段3: 设置画质（包含IBL）
-              await _setQuality('high');
-              
-              // 阶段4: 等待渲染管线稳定
+
+              // 阶段3: 加载天空盒（先加载天空盒）
+              await viewer.loadSkybox('assets/environments/sky_output_2048_skybox.ktx');
+
+              // 阶段4: 加载 IBL 并设置强度
+              await viewer.loadIbl(
+                'assets/environments/sky_output_2048_ibl.ktx',
+                intensity: _iblIntensity,  // 使用默认 IBL 强度
+                destroyExisting: true,
+              );
+
+              // 阶段5: 设置画质（不再重新加载 IBL）
+              await _setQualityWithoutIBL('high');
+
+              // 阶段6: 等待渲染管线稳定
               await Future.delayed(const Duration(milliseconds: 200));
-              
-              // 阶段5: 初始化光照
+
+              // 阶段7: 初始化光照
               await _initializeLighting();
               
-              // 阶段6: 设置相机
+              // 阶段8: 设置相机
               await _updateSphericalCamera();
 
-              // 阶段7: 启用渲染
+              // 阶段9: 启用渲染
               await viewer.setRendering(true);
 
               
