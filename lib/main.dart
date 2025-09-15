@@ -36,6 +36,21 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   Timer? _fpsTimer;
   bool _showFpsOverlay = true;
   
+  // 🎭 动画控制变量
+  ThermionAsset? _characterAsset;
+  List<String> _animationNames = [];
+  List<double> _animationDurations = [];
+  int _selectedAnimationIndex = -1;
+  bool _isAnimationPlaying = false;
+  final bool _autoLoop = true; // 自动循环播放
+  
+  // 🎯 自定义动画名称映射 - 你可以在这里修改动画名称
+  final Map<int, String> _customAnimationNames = {
+    0: "角色待机", // 第一个动画的自定义名称
+    // 1: "角色走路", // 如果有第二个动画
+    // 2: "角色挥手", // 如果有第三个动画
+  };
+  
   // 悬浮按钮控制
   bool _isControlPanelOpen = false;
   late AnimationController _animationController;
@@ -44,17 +59,12 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
   bool _isCameraAnimating = false;
   
   // 相机控制
-  final double _cameraX = 0.0;
-  final double _cameraY = 1.5; // 修正为与旋转一致
-  final double _cameraZ = 3.2;
-  final double _focusX = 0.0;
   double _focusY = 0.60;       // 焦点Y坐标 - 可调节，用于球坐标相机
-  final double _focusZ = 0.0;
   
 
   
   // 球坐标相机控制 - 基于最佳全身照角度优化
-  double _cameraRadius = 3.2;  // 🎯 最佳距离 - 完美全身照构图
+  double _cameraRadius = 3.0;  // 🎯 增加距离适应原始模型尺寸
   double _cameraTheta = 90.0;  // 🎯 最佳水平角度 - 人物正面
   double _cameraPhi = 75.0;   // 🎯 最佳垂直角度 - 理想俯视角度
   final bool _useSphericalCamera = true; // 使用球坐标控制
@@ -98,6 +108,12 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
         // 停止渲染
         await _viewer!.setRendering(false);
         
+        // 清理角色资源
+        if (_characterAsset != null) {
+          await _viewer!.destroyAsset(_characterAsset!);
+          _characterAsset = null;
+        }
+        
         // 清理所有光照
         await _viewer!.destroyLights();
         
@@ -135,22 +151,6 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     }
     
     SchedulerBinding.instance.addPostFrameCallback(_onFrame);
-  }
-
-  // 相机更新方法
-  Future<void> _updateCamera() async {
-    if (_viewer == null) return;
-    
-    try {
-      final camera = await _viewer!.getActiveCamera();
-      await camera.lookAt(
-        v.Vector3(_cameraX, _cameraY, _cameraZ),
-        focus: v.Vector3(_focusX, _focusY, _focusZ),
-        up: v.Vector3(0, 1, 0),
-      );
-    } catch (e) {
-      debugPrint('❌ 相机更新失败: $e');
-    }
   }
 
   // 🎬 带动画的球坐标相机更新
@@ -402,6 +402,294 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     }
   }
 
+  // 🎭 动画系统方法
+  Future<void> _loadCharacterAnimations() async {
+    if (_viewer == null || _characterAsset == null) return;
+
+    try {
+      debugPrint('🎭 开始加载角色动画数据...');
+      
+      // 获取动画名称列表
+      final animations = await _characterAsset!.getGltfAnimationNames();
+      debugPrint('📋 发现 ${animations.length} 个动画: $animations');
+      
+      // 获取每个动画的时长
+      final durations = await Future.wait(
+        List.generate(animations.length, (i) => _characterAsset!.getGltfAnimationDuration(i))
+      );
+      
+      // 🎯 使用自定义名称或生成默认名称
+      final processedNames = <String>[];
+      for (int i = 0; i < animations.length; i++) {
+        String finalName;
+        if (_customAnimationNames.containsKey(i)) {
+          // 使用自定义名称
+          finalName = _customAnimationNames[i]!;
+        } else if (animations[i].isNotEmpty) {
+          // 使用原始名称
+          finalName = animations[i];
+        } else {
+          // 生成默认名称
+          finalName = "动画_${i + 1}";
+        }
+        processedNames.add(finalName);
+      }
+      
+      setState(() {
+        _animationNames = processedNames;
+        _animationDurations = durations;
+        _selectedAnimationIndex = animations.isNotEmpty ? 0 : -1;
+      });
+      
+      debugPrint('✅ 动画数据加载完成');
+      for (int i = 0; i < processedNames.length; i++) {
+        debugPrint('   ${i + 1}. ${processedNames[i]} (${durations[i].toStringAsFixed(1)}s)');
+      }
+      
+      // 🚨 检查动画名称问题
+      if (animations.isNotEmpty && animations[0].isEmpty) {
+        debugPrint('⚠️ 检测到动画名称丢失，这可能导致权重问题');
+        debugPrint('💡 建议解决方案:');
+        debugPrint('   1. 在 Blender 中重新导出 GLB 文件');
+        debugPrint('   2. 确保启用 "Include All Bone Influences"');
+        debugPrint('   3. 检查权重绘制是否正确');
+        debugPrint('   4. 尝试使用 FBX 格式转换');
+      }
+      
+      // 🎬 暂时不自动播放，测试静态模型
+      if (animations.isNotEmpty) {
+        debugPrint('🎬 发现动画但不自动播放，请手动测试: ${animations[0]}');
+        // await Future.delayed(const Duration(milliseconds: 500)); // 等待状态更新
+        // await _playAnimation();
+      }
+      
+    } catch (e) {
+      debugPrint('❌ 动画数据加载失败: $e');
+      setState(() {
+        _animationNames = [];
+        _animationDurations = [];
+        _selectedAnimationIndex = -1;
+      });
+    }
+  }
+
+  Future<void> _playAnimation() async {
+    if (_characterAsset == null || _selectedAnimationIndex == -1) {
+      debugPrint('⚠️ 无法播放动画：资源或索引无效');
+      return;
+    }
+
+    try {
+      debugPrint('▶️ 播放动画: ${_animationNames[_selectedAnimationIndex]} ${_autoLoop ? "(循环)" : ""}');
+      
+      // 🎭 使用循环播放让角色保持活跃
+      if (_autoLoop) {
+        await _characterAsset!.playGltfAnimation(_selectedAnimationIndex, loop: true);
+      } else {
+        await _characterAsset!.playGltfAnimation(_selectedAnimationIndex);
+      }
+      
+      setState(() {
+        _isAnimationPlaying = true;
+      });
+      
+    } catch (e) {
+      debugPrint('❌ 动画播放失败: $e');
+    }
+  }
+
+  Future<void> _stopAnimation() async {
+    if (_characterAsset == null || _selectedAnimationIndex == -1) return;
+
+    try {
+      debugPrint('⏹️ 停止动画: ${_animationNames[_selectedAnimationIndex]}');
+      await _characterAsset!.stopGltfAnimation(_selectedAnimationIndex);
+      
+      setState(() {
+        _isAnimationPlaying = false;
+      });
+      
+    } catch (e) {
+      debugPrint('❌ 动画停止失败: $e');
+    }
+  }
+
+  void _selectAnimation(int index) {
+    if (index >= 0 && index < _animationNames.length) {
+      setState(() {
+        _selectedAnimationIndex = index;
+        _isAnimationPlaying = false; // 切换动画时重置播放状态
+      });
+      debugPrint('🎯 选择动画: ${_animationNames[index]}');
+    }
+  }
+
+  // 🔄 重置模型到初始状态
+  Future<void> _resetModel() async {
+    if (_characterAsset == null) return;
+
+    try {
+      debugPrint('🔄 重置模型到初始状态...');
+      
+      // 停止所有动画
+      for (int i = 0; i < _animationNames.length; i++) {
+        try {
+          await _characterAsset!.stopGltfAnimation(i);
+        } catch (e) {
+          // 忽略停止动画的错误
+        }
+      }
+      
+      setState(() {
+        _isAnimationPlaying = false;
+      });
+      
+      debugPrint('✅ 模型已重置到初始状态');
+      
+    } catch (e) {
+      debugPrint('❌ 重置模型失败: $e');
+    }
+  }
+
+  // 🧪 尝试重新加载模型
+  Future<void> _reloadModel() async {
+    if (_viewer == null) return;
+
+    try {
+      debugPrint('🧪 尝试重新加载模型...');
+      
+      // 销毁当前资产
+      if (_characterAsset != null) {
+        await _viewer!.destroyAsset(_characterAsset!);
+        _characterAsset = null;
+      }
+      
+      // 清空动画数据
+      setState(() {
+        _animationNames = [];
+        _animationDurations = [];
+        _selectedAnimationIndex = -1;
+        _isAnimationPlaying = false;
+      });
+      
+      // 等待一下
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // 重新加载
+      _characterAsset = await _viewer!.loadGltf('assets/models/character.glb');
+      debugPrint('🔄 模型重新加载完成');
+      
+      // 重新加载动画数据
+      await _loadCharacterAnimations();
+      
+    } catch (e) {
+      debugPrint('❌ 重新加载模型失败: $e');
+    }
+  }
+
+  // 🦴 权重诊断方法
+  Future<void> _diagnoseWeights() async {
+    if (_characterAsset == null) return;
+
+    try {
+      debugPrint('🦴 开始权重诊断...');
+      
+      // 检查模型边界
+      final bounds = await _characterAsset!.getBoundingBox();
+      final size = bounds.max - bounds.min;
+      debugPrint('📏 当前模型尺寸: ${size.x.toStringAsFixed(1)} x ${size.y.toStringAsFixed(1)} x ${size.z.toStringAsFixed(1)}');
+      
+      // 尝试获取动画相关信息
+      if (_animationNames.isNotEmpty) {
+        for (int i = 0; i < _animationNames.length; i++) {
+          try {
+            final animName = _animationNames[i].isEmpty ? "未命名动画_$i" : _animationNames[i];
+            final duration = _animationDurations[i];
+            debugPrint('🎭 动画 $i: $animName - 时长: ${duration}s');
+          } catch (e) {
+            debugPrint('❌ 无法获取动画 $i 信息: $e');
+          }
+        }
+      }
+      
+      // 权重问题诊断
+      debugPrint('🔍 权重问题分析:');
+      debugPrint('   - 动画名称丢失: ${_animationNames.isNotEmpty && _animationNames[0].isEmpty}');
+      debugPrint('   - 模型尺寸异常: ${size.y > 10.0}');
+      debugPrint('   - 建议: ${_animationNames.isNotEmpty && _animationNames[0].isEmpty ? "重新导出GLB文件" : "尝试安全播放模式"}');
+      
+    } catch (e) {
+      debugPrint('❌ 权重诊断失败: $e');
+    }
+  }
+
+  // 🎭 尝试安全播放模式（可能避免权重问题）
+  Future<void> _playSafeAnimation() async {
+    if (_characterAsset == null || _selectedAnimationIndex == -1) return;
+
+    try {
+      debugPrint('🛡️ 尝试安全播放模式...');
+      
+      // 先停止所有动画
+      await _resetModel();
+      await Future.delayed(const Duration(milliseconds: 200));
+      
+      // 使用最基础的播放方式，不循环
+      await _characterAsset!.playGltfAnimation(_selectedAnimationIndex);
+      
+      setState(() {
+        _isAnimationPlaying = true;
+      });
+      
+      debugPrint('✅ 安全模式播放完成');
+      
+    } catch (e) {
+      debugPrint('❌ 安全播放失败: $e');
+    }
+  }
+
+  // 🎯 尝试 transformToUnitCube 修复权重
+  Future<void> _tryTransformToUnitCube() async {
+    if (_characterAsset == null) return;
+
+    try {
+      debugPrint('🎯 尝试应用 transformToUnitCube 修复权重问题...');
+      
+      // 先停止动画
+      await _resetModel();
+      
+      // 应用单位立方体变换
+      await _characterAsset!.transformToUnitCube();
+      
+      // 重置相机
+      setState(() {
+        _cameraRadius = 3.0;
+      });
+      
+      await _updateSphericalCamera();
+      
+      debugPrint('✅ transformToUnitCube 应用完成，请测试动画');
+      
+    } catch (e) {
+      debugPrint('❌ transformToUnitCube 失败: $e');
+    }
+  }
+
+
+
+  // 🎭 快速设置常用动画名称
+  void _setCommonAnimationNames() {
+    final commonNames = ['待机', '走路', '跑步', '跳跃', '挥手', '舞蹈'];
+    
+    setState(() {
+      for (int i = 0; i < _animationNames.length && i < commonNames.length; i++) {
+        _animationNames[i] = commonNames[i];
+      }
+    });
+    
+    debugPrint('🎭 已应用常用动画名称');
+  }
+
   Widget _buildControlButton({
     required String label,
     required void Function() onPressed,
@@ -639,6 +927,120 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                       ),
                     ],
                   ),
+                  
+                  // 🎭 动画控制组
+                  if (_animationNames.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text(
+                      '🎭 动画控制',
+                      style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    
+                    // 动画选择下拉菜单
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[800],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButton<int>(
+                        value: _selectedAnimationIndex >= 0 ? _selectedAnimationIndex : null,
+                        hint: const Text('选择动画', style: TextStyle(color: Colors.white70)),
+                        dropdownColor: Colors.grey[800],
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        underline: Container(),
+                        isExpanded: true,
+                        items: _animationNames.asMap().entries.map((entry) {
+                          final index = entry.key;
+                          final name = entry.value;
+                          final duration = _animationDurations[index];
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Text(
+                              '$name (${duration.toStringAsFixed(1)}s)',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (index) {
+                          if (index != null) {
+                            _selectAnimation(index);
+                          }
+                        },
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 8),
+                    
+                    // 播放控制按钮
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          label: _isAnimationPlaying ? '⏸️ 暂停' : '▶️ 播放',
+                          color: _isAnimationPlaying ? Colors.orange : Colors.green,
+                          isActive: _isAnimationPlaying,
+                          onPressed: _selectedAnimationIndex >= 0 
+                            ? (_isAnimationPlaying ? _stopAnimation : _playAnimation)
+                            : () {},
+                        ),
+                        _buildControlButton(
+                          label: '⏹️ 停止',
+                          color: Colors.red,
+                          onPressed: _selectedAnimationIndex >= 0 ? _stopAnimation : () {},
+                        ),
+                        _buildControlButton(
+                          label: '🔄 重置',
+                          color: Colors.blue,
+                          onPressed: _resetModel,
+                        ),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 8),
+                    
+                    // 高级测试按钮
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          label: '🧪 重载',
+                          color: Colors.purple,
+                          onPressed: _reloadModel,
+                        ),
+                        _buildControlButton(
+                          label: '🦴 诊断',
+                          color: Colors.teal,
+                          onPressed: _diagnoseWeights,
+                        ),
+                        _buildControlButton(
+                          label: '🛡️ 安全播放',
+                          color: Colors.indigo,
+                          onPressed: _playSafeAnimation,
+                        ),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 8),
+                    
+                    // 实验性修复按钮
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          label: '🎯 单位化',
+                          color: Colors.amber,
+                          onPressed: _tryTransformToUnitCube,
+                        ),
+                        _buildControlButton(
+                          label: '🏷️ 重命名',
+                          color: Colors.pink,
+                          onPressed: _setCommonAnimationNames,
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -670,11 +1072,12 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
         children: [
           // 3D 视图
           ViewerWidget(
-            assetPath: 'assets/models/2D_Girl.glb',
+            // 不自动加载模型，改为在 onViewerAvailable 中手动加载
+            // assetPath: 'assets/models/character.glb',
             // 不在这里加载 IBL 和 Skybox，改为在 onViewerAvailable 中手动控制
             // iblPath: 'assets/environments/sky_output_2048_ibl.ktx',
             // skyboxPath: 'assets/environments/sky_output_2048_skybox.ktx',
-            transformToUnitCube: true,
+            transformToUnitCube: false, // 手动控制
             manipulatorType: ManipulatorType.NONE,
             //background: const Color(0xFF1A1A1A),  // 深色背景
             onViewerAvailable: (viewer) async {
@@ -716,6 +1119,56 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
               // 阶段9: 启用渲染
               await viewer.setRendering(true);
 
+              // 🎭 阶段10: 手动加载角色模型并获取动画数据
+              try {
+                debugPrint('🎭 开始加载角色模型: assets/models/character.glb');
+                _characterAsset = await viewer.loadGltf('assets/models/character.glb');
+                
+                // 🎯 根据模型边界决定是否需要缩放
+                final bounds = await _characterAsset!.getBoundingBox();
+                final height = bounds.max.y - bounds.min.y;
+                
+                if (height > 10.0) {
+                  debugPrint('📏 模型过大 (高度: ${height.toStringAsFixed(1)})，尝试 transformToUnitCube');
+                  // 🧪 尝试使用 transformToUnitCube 来修复权重问题
+                  try {
+                    await _characterAsset!.transformToUnitCube();
+                    debugPrint('✅ transformToUnitCube 应用成功');
+                    // 重置相机距离
+                    setState(() {
+                      _cameraRadius = 3.0;
+                    });
+                  } catch (e) {
+                    debugPrint('❌ transformToUnitCube 失败: $e');
+                    // 调整相机距离作为备选方案
+                    setState(() {
+                      _cameraRadius = height * 0.8;
+                    });
+                  }
+                } else {
+                  debugPrint('📏 模型尺寸合适 (高度: ${height.toStringAsFixed(1)})，保持原始设置');
+                }
+                
+                // 🔍 获取模型详细信息用于调试
+                try {
+                  final bounds = await _characterAsset!.getBoundingBox();
+                  debugPrint('📏 模型边界: min=${bounds.min}, max=${bounds.max}');
+                  
+                  // 🎯 尝试获取骨骼信息（如果API支持）
+                  debugPrint('🦴 开始检查骨骼和权重信息...');
+                  
+                } catch (e) {
+                  debugPrint('📏 无法获取模型信息: $e');
+                }
+                
+                debugPrint('✅ 角色模型加载完成（保持原始尺寸），开始加载动画数据...');
+                
+                // 加载动画数据
+                await _loadCharacterAnimations();
+                
+              } catch (e) {
+                debugPrint('❌ 角色模型加载失败: $e');
+              }
               
               debugPrint('✅ Thermion 3D 渲染系统设置完成');
               debugPrint('📊 HDR 环境坐标系统: θ=0°(+Z正面), θ=180°(-Z背面)');
@@ -767,6 +1220,27 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
                           fontSize: 10,
                         ),
                       ),
+                    ],
+                    // 🎭 动画状态信息
+                    if (_animationNames.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '🎭 动画: ${_animationNames.length}个',
+                        style: const TextStyle(color: Colors.cyan, fontSize: 10),
+                      ),
+                      if (_selectedAnimationIndex >= 0) ...[
+                        Text(
+                          '当前: ${_animationNames[_selectedAnimationIndex]}',
+                          style: const TextStyle(color: Colors.white, fontSize: 9),
+                        ),
+                        Text(
+                          '状态: ${_isAnimationPlaying ? "播放中" : "已停止"}',
+                          style: TextStyle(
+                            color: _isAnimationPlaying ? Colors.green : Colors.grey,
+                            fontSize: 9,
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ),
