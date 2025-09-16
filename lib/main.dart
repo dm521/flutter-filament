@@ -1,134 +1,653 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' hide View;
 import 'package:flutter/scheduler.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
-import 'package:vector_math/vector_math_64.dart' as v;
-import 'dart:async';
-import 'dart:math' as math;
+import 'package:vector_math/vector_math_64.dart' hide Colors;
 
-void main() => runApp(const MyApp());
+// 🎭 动画状态枚举
+enum AnimState { none, idle, talk }
+
+void main() {
+  runApp(const MyApp());
+}
+
+
+// Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
+//   // 清旧灯，避免叠加
+//   try { await viewer.destroyLights(); } catch (_) {}
+
+//   // 你的对焦点（只用于算方向，不改相机）
+//   final Vector3 focus = Vector3(0.0, 1.10, 0.0);
+
+//   Vector3 _dirFromPosToFocus(Vector3 pos, Vector3 target) {
+//     final d = target - pos; d.normalize(); return d;
+//   }
+
+//   Future<void> _sun({
+//     required double kelvin,      // Filament: 色温 double
+//     required double intensity,
+//     required Vector3 dir,
+//     bool shadows = false,
+//   }) async {
+//     await viewer.addDirectLight(DirectLight.sun(
+//       color: kelvin,
+//       intensity: intensity,
+//       castShadows: shadows,
+//       direction: dir,
+//     ));
+//   }
+
+//   // 统一增益（整体亮度旋钮）：IBL 仍在，所以把方向光提到主导层级
+//   const double kScale = 20000.0;   // 觉得还亮不够就 22000 / 24000
+
+//   // 1) “环境兜底” —— 极弱顶部中性光（有 IBL 就更轻）
+//   await _sun(
+//     kelvin: 6500.0,
+//     intensity: 1200.0,                 // 原来 1500 → 更弱，只抹死黑
+//     dir: Vector3(0.0, -1.0, -0.20),
+//     shadows: false,
+//   );
+
+//   // 2) 暖色补光（由 PointLight 近似）
+//   final Vector3 pointPos = Vector3(0.316, 0.896, -0.172);
+//   await _sun(
+//     kelvin: 5600.0,                    // 略暖
+//     intensity: 1.60 * kScale,          // 原来 1.35*kScale → 1.60*kScale
+//     dir: _dirFromPosToFocus(pointPos, focus),
+//     shadows: false,
+//   );
+
+//   // 3) 主光（Directional）—— 开阴影，方向更“擦面”
+//   final Vector3 dirPos = Vector3(-2.248, 2.00, 2.806);   // y 再低一点更擦面
+//   await _sun(
+//     kelvin: 6200.0,                    // 中性略冷
+//     intensity: 3.60 * kScale,          // 原来 3.20*kScale → 3.60*kScale
+//     dir: _dirFromPosToFocus(dirPos, focus),
+//     shadows: true,
+//   );
+
+//   // 4) 冷色轮廓光（新增，提升发丝/肩线的立体感；不投影）
+//   final Vector3 rimPos = Vector3(0.9, 1.8, -2.2);        // 右后上
+//   await _sun(
+//     kelvin: 8200.0,                    // 偏冷
+//     intensity: 1.20 * kScale,          // 适中，主要勾边
+//     dir: _dirFromPosToFocus(rimPos, focus),
+//     shadows: false,
+//   );
+
+//   try { await viewer.setRendering(true); } catch (_) {}
+// }
+
+
+Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
+  try { await viewer.destroyLights(); } catch (_) {}
+
+  final Vector3 focus = Vector3(0.0, 1.10, 0.0);
+  Vector3 _dir(Vector3 pos) { final d = focus - pos; d.normalize(); return d; }
+
+  Future<void> _sun({
+    required double k, required double it, required Vector3 dir, bool shadow=false
+  }) async {
+    await viewer.addDirectLight(DirectLight.sun(
+      color: k, intensity: it, castShadows: shadow, direction: dir,
+    ));
+  }
+
+  // 全局增益：整体还暗就 23000–24000；过亮就 20000
+  const double kScale = 22000.0;
+
+  // A) 顶部中性兜底（极弱，只抹死黑）
+  await _sun(k: 6500.0, it: 800.0, dir: Vector3(0.0, -1.0, -0.15));
+
+  // B) 主光（左前上 → 更“擦面”，强度降，开阴影；避免正怼脸）
+  final Vector3 keyPos = Vector3(-1.10, 1.45, 1.90);
+  await _sun(k: 6000.0, it: 1.95 * kScale, dir: _dir(keyPos), shadow: true);
+
+  // C) 顶部柔补（明显抬胸腹/眼下阴影）
+  final Vector3 fillTopPos = Vector3(0.0, 2.60, 1.00);
+  await _sun(k: 6000.0, it: 1.90 * kScale, dir: _dir(fillTopPos));
+
+  // D) 右前暖补（更靠前更贴脸，吃掉右脸/躯干硬阴影）
+  final Vector3 warmPos = Vector3(0.70, 1.10, 0.10);
+  await _sun(k: 5400.0, it: 2.10 * kScale, dir: _dir(warmPos));
+
+  // E) 左侧微补（小功率，只填左臂死黑）
+  final Vector3 leftFillPos = Vector3(-0.90, 1.10, 0.40);
+  await _sun(k: 5900.0, it: 0.55 * kScale, dir: _dir(leftFillPos));
+
+  // F) 冷轮廓（更轻，只勾发丝/肩线）
+  final Vector3 rimPos = Vector3(1.10, 1.90, -2.20);
+  await _sun(k: 8200.0, it: 0.45 * kScale, dir: _dir(rimPos));
+
+  // G) 反天光（偏暖、加量：腿/鞋不再死白，裙褶回细节）
+  final Vector3 bouncePos = Vector3(0.0, -1.05, 0.55);
+  await _sun(k: 5000.0, it: 1.30 * kScale, dir: _dir(bouncePos));
+
+  // H) 正面柔光（很弱，从镜头方向两盏，均匀抹面部阴影）
+  final Vector3 camSoft1 = Vector3(0.10, 1.30, 3.0);
+  final Vector3 camSoft2 = Vector3(-0.10, 1.30, 3.0);
+  await _sun(k: 5800.0, it: 0.45 * kScale, dir: _dir(camSoft1));
+  await _sun(k: 5800.0, it: 0.45 * kScale, dir: _dir(camSoft2));
+
+    // 1) 胸腹/上臂：正面柔填（很弱，尽量不碰脸）
+    final Vector3 torsoFillPos = Vector3(0.20, 1.20, 1.60);   // 镜头略下、正前方
+    await _sun(
+    k: 5600.0,                       // 略暖，让皮肤不灰
+    it: 0.90 * kScale,               // 小功率，只抬中段
+    dir: _dir(torsoFillPos),
+    // shadows: false  // 默认 false
+    );
+
+    // 2) 鞋/裙摆：地面反天光（比原先更暖更有量）
+    final Vector3 shoeBouncePos = Vector3(0.0, -0.40, 0.90);  // 脚前偏低位，向上托
+    await _sun(
+    k: 5000.0,                       // 偏暖，减少“病白”
+    it: 1.20 * kScale,               // 比你现有 bounce 稍强
+    dir: _dir(shoeBouncePos)
+    );
+
+    // 3) 裙褶 kicker：低右前侧光，提裙摆细节，不影响上半身
+    final Vector3 skirtKickerPos = Vector3(0.80, -0.20, 0.60);
+    await _sun(
+    k: 5200.0,                       // 微暖
+    it: 0.70 * kScale,               // 中等，小范围提折线
+    dir: _dir(skirtKickerPos)
+    );
+
+  try { await viewer.setRendering(true); } catch (_) {}
+}
+
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-  
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: const ThermionDemo(),
+      title: 'Thermion 角色动画测试',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        useMaterial3: true,
+      ),
+      home: const MyHomePage(title: '角色动画测试'),
     );
   }
 }
 
-class ThermionDemo extends StatefulWidget {
-  const ThermionDemo({super.key});
+class MyHomePage extends StatefulWidget {
+  const MyHomePage({super.key, required this.title});
+  final String title;
 
   @override
-  State<ThermionDemo> createState() => _ThermionDemoState();
+  State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMixin {
+class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
+  late DelegateInputHandler _inputHandler;
+  ThermionViewer? _thermionViewer;
+
+  ThermionAsset? _asset;
   
-  // 核心变量
-  ThermionViewer? _viewer;
+  // 🎭 测试用的角色模型路径
+  final _characterUri = "assets/models/erciyuan.glb";
+
+  // 动画相关
+  final gltfAnimations = <String>[];
+  final gltfDurations = <double>[];
+  int selectedGltfAnimation = -1;
+  bool isPlaying = false;
+  
+  // 🎭 动画状态机
+  AnimState _currentState = AnimState.none;
+  int _idleAnimIndex = -1;
+  int _talkAnimIndex = -1;
+  int _lastPlayingIndex = -1;
+  Timer? _talkTimer;
+  
+  // 悬浮控制面板
+  bool _isControlPanelOpen = false;
+  late AnimationController _animationController;
+  
+  // FPS 监控
   double _fps = 0.0;
   int _frameCount = 0;
   DateTime _lastTime = DateTime.now();
   Timer? _fpsTimer;
   bool _showFpsOverlay = true;
   
-  // 🎭 动画控制变量
-  ThermionAsset? _characterAsset;
-  List<String> _animationNames = [];
-  List<double> _animationDurations = [];
-  int _selectedAnimationIndex = -1;
-  bool _isAnimationPlaying = false;
-  final bool _autoLoop = true; // 自动循环播放
-  
-  // 🎯 自定义动画名称映射 - 你可以在这里修改动画名称
-  final Map<int, String> _customAnimationNames = {
-    0: "角色待机", // 第一个动画的自定义名称
-    // 1: "角色走路", // 如果有第二个动画
-    // 2: "角色挥手", // 如果有第三个动画
-  };
-  
-  // 悬浮按钮控制
-  bool _isControlPanelOpen = false;
-  late AnimationController _animationController;
-  
-  // 相机动画控制
-  bool _isCameraAnimating = false;
-  
-  // 相机控制
-  double _focusY = 0.60;       // 焦点Y坐标 - 可调节，用于球坐标相机
-  
+  // 按钮按下状态
+  bool _isMicPressed = false;
 
-  
-  // 球坐标相机控制 - 基于最佳全身照角度优化
-  double _cameraRadius = 3.0;  // 🎯 增加距离适应原始模型尺寸
-  double _cameraTheta = 90.0;  // 🎯 最佳水平角度 - 人物正面
-  double _cameraPhi = 75.0;   // 🎯 最佳垂直角度 - 理想俯视角度
-  final bool _useSphericalCamera = true; // 使用球坐标控制
-  
-  // HDR 环境控制 - 需要更强来匹配Three.js的AmbientLight效果
-  double _iblIntensity = 45000.0;  // 进一步提高环境光强度，模拟Three.js AmbientLight效果
-  
-  // 画质预设系统
-  String _currentQuality = 'high';  // high/medium/low
+  Future _loadCharacter(String? uri) async {
+    if (_asset != null) {
+      await _thermionViewer!.destroyAsset(_asset!);
+      _asset = null;
+    }
 
+    // 加载指定的角色模型
+    if (uri != null) {
+      try {
+        if (kDebugMode) {
+          debugPrint('🎭 开始加载角色: $uri');
+        }
+        
+        _asset = await _thermionViewer!.loadGltf(uri);
+        
+        // 🎯 获取模型边界信息
+        final bounds = await _asset!.getBoundingBox();
+        final size = bounds.max - bounds.min;
+        if (kDebugMode) {
+          debugPrint('📏 模型尺寸: ${size.x.toStringAsFixed(2)} x ${size.y.toStringAsFixed(2)} x ${size.z.toStringAsFixed(2)}');
+        }
+        
+        // 🎯 应用单位立方体变换（官方推荐）
+        await _asset!.transformToUnitCube();
+        if (kDebugMode) {
+          debugPrint('✅ 已应用 transformToUnitCube');
+        }
+        
+        // 🎭 获取动画数据
+        final animations = await _asset!.getGltfAnimationNames();
+        final durations = await Future.wait(
+          List.generate(animations.length, (i) => _asset!.getGltfAnimationDuration(i))
+        );
 
+        if (kDebugMode) {
+          debugPrint('📋 发现 ${animations.length} 个动画:');
+        }
+        
+        // 🎯 处理动画名称和时长
+        gltfAnimations.clear();
+        gltfDurations.clear();
+        
+        for (int i = 0; i < animations.length; i++) {
+          final animName = animations[i].isEmpty ? "动画_${i + 1}" : animations[i];
+          final duration = durations[i];
+          
+          gltfAnimations.add("$animName (${duration.toStringAsFixed(1)}s)");
+          gltfDurations.add(duration);
+          
+          if (kDebugMode) {
+            debugPrint('   ${i + 1}. $animName - ${duration.toStringAsFixed(1)}s');
+          }
+        }
+        
+        selectedGltfAnimation = animations.isNotEmpty ? 0 : -1;
+        isPlaying = false;
+        
+        // 🎯 匹配 idle 和 talk 动画索引
+        _matchAnimationIndices(animations);
+        
+        if (kDebugMode) {
+          debugPrint('✅ 角色加载完成');
+          debugPrint('🎭 Idle 动画索引: $_idleAnimIndex');
+          debugPrint('🎭 Talk 动画索引: $_talkAnimIndex');
+        }
+        
+        // 🎬 自动开始 idle 循环
+        if (_idleAnimIndex >= 0) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          await startIdleLoop();
+        } else if (animations.isNotEmpty) {
+          // 兜底：播放第一个动画作为 idle
+          _idleAnimIndex = 0;
+          await Future.delayed(const Duration(milliseconds: 500));
+          await startIdleLoop();
+        }
+        
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('❌ 角色加载失败: $e');
+        }
+        _asset = null;
+        gltfAnimations.clear();
+        gltfDurations.clear();
+        selectedGltfAnimation = -1;
+      }
+    }
+    setState(() {});
+  }
 
+  Future _playGltfAnimation() async {
+    if (selectedGltfAnimation == -1 || _asset == null) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 无法播放动画：无效的动画索引或资产');
+      }
+      return;
+    }
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('▶️ 播放动画: ${gltfAnimations[selectedGltfAnimation]}');
+      }
+      await _asset!.playGltfAnimation(selectedGltfAnimation, loop: true);
+      setState(() {
+        isPlaying = true;
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 动画播放失败: $e');
+      }
+    }
+  }
+
+  Future _stopGltfAnimation() async {
+    if (selectedGltfAnimation == -1 || _asset == null) {
+      return;
+    }
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('⏹️ 停止动画: ${gltfAnimations[selectedGltfAnimation]}');
+      }
+      await _asset!.stopGltfAnimation(selectedGltfAnimation);
+      setState(() {
+        isPlaying = false;
+      });
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 动画停止失败: $e');
+      }
+    }
+  }
+
+  // 🎯 匹配动画索引（根据名称关键词）
+  void _matchAnimationIndices(List<String> animations) {
+    _idleAnimIndex = -1;
+    _talkAnimIndex = -1;
+    
+    if (kDebugMode) {
+      debugPrint('🔍 开始匹配动画索引...');
+      for (int i = 0; i < animations.length; i++) {
+        debugPrint('   动画 $i: ${animations[i]}');
+      }
+    }
+    
+    for (int i = 0; i < animations.length; i++) {
+      final animName = animations[i].toLowerCase();
+      
+      // 匹配 idle 动画
+      if (_idleAnimIndex == -1 && 
+          (animName.contains('idle') || 
+           animName.contains('wait') || 
+           animName.contains('stand'))) {
+        _idleAnimIndex = i;
+        if (kDebugMode) {
+          debugPrint('✅ 找到 Idle 动画: $i (${animations[i]})');
+        }
+      }
+      
+      // 匹配 talk 动画
+      if (_talkAnimIndex == -1 && 
+          (animName.contains('talk') || 
+           animName.contains('speak') || 
+           animName.contains('speech'))) {
+        _talkAnimIndex = i;
+        if (kDebugMode) {
+          debugPrint('✅ 找到 Talk 动画: $i (${animations[i]})');
+        }
+      }
+    }
+    
+    // 兜底策略 - 只设置 idle，不自动设置 talk
+    if (_idleAnimIndex == -1 && animations.isNotEmpty) {
+      _idleAnimIndex = 0; // 第一个动画作为 idle
+      if (kDebugMode) {
+        debugPrint('⚠️ 未找到 Idle 关键词，使用第一个动画作为 Idle: ${animations[0]}');
+      }
+    }
+    
+    // 如果只有一个动画，可以让 talk 也使用同一个动画
+    if (_talkAnimIndex == -1 && animations.length == 1) {
+      _talkAnimIndex = 0; // 使用同一个动画作为 talk
+      if (kDebugMode) {
+        debugPrint('💡 只有一个动画，将其同时用作 Idle 和 Talk');
+      }
+    } else if (_talkAnimIndex == -1) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 未找到 Talk 动画，需要手动指定');
+      }
+    }
+    
+    if (kDebugMode) {
+      debugPrint('🎭 最终匹配结果: Idle=$_idleAnimIndex, Talk=$_talkAnimIndex');
+    }
+  }
+
+  // 🛑 停止所有动画
+  Future<void> _stopAllAnimations() async {
+    if (_asset == null) return;
+    
+    try {
+      // 停止所有可能播放的动画
+      for (int i = 0; i < gltfAnimations.length; i++) {
+        try {
+          await _asset!.stopGltfAnimation(i);
+        } catch (e) {
+          // 忽略停止失败的错误
+        }
+      }
+      _lastPlayingIndex = -1;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 停止所有动画失败: $e');
+      }
+    }
+  }
+
+  // 🔄 开始 Idle 循环
+  Future<void> startIdleLoop() async {
+    if (_asset == null || _idleAnimIndex == -1) return;
+    // 移除防重复检查，允许强制切换到 idle
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🎭 开始 Idle 循环...');
+      }
+      
+      // 取消说话定时器
+      _talkTimer?.cancel();
+      
+      // 停止其他动画
+      await _stopAllAnimations();
+      
+      // 播放 idle 循环
+      await _asset!.playGltfAnimation(_idleAnimIndex, loop: true);
+      _lastPlayingIndex = _idleAnimIndex;
+      
+      setState(() {
+        _currentState = AnimState.idle;
+        isPlaying = true;
+        selectedGltfAnimation = _idleAnimIndex;
+      });
+      
+      if (kDebugMode) {
+        debugPrint('✅ Idle 循环已开始');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Idle 循环失败: $e');
+      }
+    }
+  }
+
+  // 🗣️ 开始 Talk 循环
+  Future<void> startTalkLoop() async {
+    if (_asset == null || _talkAnimIndex == -1) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 无法开始 Talk 循环: asset=$_asset, talkIndex=$_talkAnimIndex');
+      }
+      return;
+    }
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🎭 开始 Talk 循环... (从 ${_currentState} 状态)');
+      }
+      
+      // 取消之前的定时器
+      _talkTimer?.cancel();
+      
+      // 停止其他动画
+      await _stopAllAnimations();
+      
+      // 播放 talk 循环
+      await _asset!.playGltfAnimation(_talkAnimIndex, loop: true);
+      _lastPlayingIndex = _talkAnimIndex;
+      
+      setState(() {
+        _currentState = AnimState.talk;
+        isPlaying = true;
+        selectedGltfAnimation = _talkAnimIndex;
+      });
+      
+      if (kDebugMode) {
+        debugPrint('✅ Talk 循环已开始');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Talk 循环失败: $e');
+      }
+    }
+  }
+
+  // 🎬 播放一次 Talk 然后回到 Idle
+  Future<void> playTalkOnceThenIdle() async {
+    if (_asset == null || _talkAnimIndex == -1) return;
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🎭 播放一次 Talk 然后回到 Idle...');
+      }
+      
+      // 取消之前的定时器
+      _talkTimer?.cancel();
+      
+      // 停止其他动画
+      await _stopAllAnimations();
+      
+      // 播放 talk 单次
+      await _asset!.playGltfAnimation(_talkAnimIndex, loop: false);
+      _lastPlayingIndex = _talkAnimIndex;
+      
+      setState(() {
+        _currentState = AnimState.talk;
+        isPlaying = true;
+        selectedGltfAnimation = _talkAnimIndex;
+      });
+      
+      // 设置定时器，动画结束后回到 idle
+      final talkDuration = _talkAnimIndex < gltfDurations.length 
+          ? gltfDurations[_talkAnimIndex] 
+          : 2.0; // 默认 2 秒
+      
+      _talkTimer = Timer(Duration(milliseconds: (talkDuration * 1000).round()), () {
+        startIdleLoop();
+      });
+      
+      if (kDebugMode) {
+        debugPrint('✅ Talk 单次播放已开始，${talkDuration.toStringAsFixed(1)}秒后回到 Idle');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Talk 单次播放失败: $e');
+      }
+    }
+  }
+
+  // 🔄 重置所有动画
+  Future _resetAllAnimations() async {
+    if (_asset == null) return;
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🔄 重置所有动画...');
+      }
+      for (int i = 0; i < gltfAnimations.length; i++) {
+        try {
+          await _asset!.stopGltfAnimation(i);
+        } catch (e) {
+          // 忽略停止失败的错误
+        }
+      }
+      setState(() {
+        isPlaying = false;
+      });
+      if (kDebugMode) {
+        debugPrint('✅ 所有动画已重置');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 重置动画失败: $e');
+      }
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _startFpsMonitoring();
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 300),
       vsync: this,
     );
+    _startFpsMonitoring();
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (kDebugMode) {
+        debugPrint('🚀 初始化 Thermion 查看器...');
+      }
+      
+      _thermionViewer = await ThermionFlutterPlugin.createViewer();
+
+      
+
+      // 🎥 设置相机位置
+      final camera = await _thermionViewer!.getActiveCamera();
+      await camera.lookAt(Vector3(0.5, 1.0, 3.5));
+
+      // 🌅 加载官方默认环境
+      await _thermionViewer!.loadSkybox("assets/default_env_skybox.ktx");
+      await _thermionViewer!.loadIbl("assets/default_env_ibl.ktx");
+
+      // 没有 setIblIntensity，就直接把 IBL 移除，仅留 skybox
+      //try { await _thermionViewer!.removeIbl(); } catch (_) {}
+
+      // 👉👉👉 新增：按三盏灯的规格添加（放在 IBL 之后、渲染之前）
+      await applyLightsFromSpec(_thermionViewer!);
+      
+      // 🎨 启用后处理和渲染
+      await _thermionViewer!.setPostProcessing(true);
+      await _thermionViewer!.setRendering(true);
+
+      // 🎮 设置轨道控制器
+      _inputHandler = DelegateInputHandler.fixedOrbit(_thermionViewer!);
+      
+      // 🎭 自动加载角色
+      await _loadCharacter(_characterUri);
+
+
+
+      setState(() {});
+      if (kDebugMode) {
+        debugPrint('✅ Thermion 初始化完成');
+      }
+    });
   }
 
   @override
   void dispose() {
-    _fpsTimer?.cancel();
     _animationController.dispose();
-    
-    // 🧹 完善资源清理
-    _cleanupResources();
-    
+    _fpsTimer?.cancel();
+    _talkTimer?.cancel(); // 清理说话定时器
     super.dispose();
-  }
-  
-  // 🧹 资源清理方法
-  Future<void> _cleanupResources() async {
-    try {
-      if (_viewer != null) {
-        debugPrint('🧹 开始清理3D资源...');
-        
-        // 停止渲染
-        await _viewer!.setRendering(false);
-        
-        // 清理角色资源
-        if (_characterAsset != null) {
-          await _viewer!.destroyAsset(_characterAsset!);
-          _characterAsset = null;
-        }
-        
-        // 清理所有光照
-        await _viewer!.destroyLights();
-        
-        debugPrint('✅ 3D资源清理完成');
-      }
-    } catch (e) {
-      debugPrint('❌ 资源清理失败: $e');
-    }
   }
 
   void _startFpsMonitoring() {
     SchedulerBinding.instance.addPostFrameCallback(_onFrame);
     _fpsTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
-        // FPS 更新逻辑
+        // FPS 更新逻辑在 _onFrame 中处理
       }
     });
   }
@@ -153,171 +672,44 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     SchedulerBinding.instance.addPostFrameCallback(_onFrame);
   }
 
-  // 🎬 带动画的球坐标相机更新
-  Future<void> _updateSphericalCamera({bool animate = false}) async {
-    if (_viewer == null || _isCameraAnimating) return;
-    
-    try {
-      // 将球坐标转换为笛卡尔坐标
-      final double thetaRad = _cameraTheta * (math.pi / 180.0);
-      final double phiRad = _cameraPhi * (math.pi / 180.0);
-
-      final double x = _cameraRadius * math.sin(phiRad) * math.cos(thetaRad);
-      final double y = _cameraRadius * math.cos(phiRad);
-      final double z = _cameraRadius * math.sin(phiRad) * math.sin(thetaRad);
-
-      final v.Vector3 targetPos = v.Vector3(x, y, z);
-      final v.Vector3 focusPoint = v.Vector3(0.0, _focusY, 0.0);
-      final v.Vector3 upVector = v.Vector3(0.0, 1.0, 0.0);
-
-      debugPrint('📍 球坐标相机: R=${_cameraRadius.toStringAsFixed(1)}m, θ=${_cameraTheta.toStringAsFixed(0)}°, φ=${_cameraPhi.toStringAsFixed(0)}°');
-
-      final camera = await _viewer!.getActiveCamera();
-      
-      if (animate) {
-        // 🎬 250ms 插值动画
-        _isCameraAnimating = true;
-        
-        // 获取当前位置
-        final currentPos = await camera.getPosition();
-        
-        // 创建插值动画参数
-        const steps = 10;
-        const stepDuration = Duration(milliseconds: 25);
-        
-        for (int i = 1; i <= steps; i++) {
-          final t = i / steps;
-          // 使用 easeInOut 缓动函数
-          final easedT = t * t * (3.0 - 2.0 * t);
-          
-          final interpolatedPos = v.Vector3(
-            currentPos.x + (targetPos.x - currentPos.x) * easedT,
-            currentPos.y + (targetPos.y - currentPos.y) * easedT,
-            currentPos.z + (targetPos.z - currentPos.z) * easedT,
-          );
-          
-          await camera.lookAt(interpolatedPos, focus: focusPoint, up: upVector);
-          await Future.delayed(stepDuration);
-        }
-        
-        _isCameraAnimating = false;
-      } else {
-        // 直接切换
-        await camera.lookAt(targetPos, focus: focusPoint, up: upVector);
-      }
-      
-    } catch (e) {
-      debugPrint('❌ 球坐标相机更新失败: $e');
-      _isCameraAnimating = false;
-    }
-  }
-
-  // HDR 环境控制方法
-  Future<void> _updateIblIntensity() async {
-    if (_viewer == null) return;
-
-    try {
-      debugPrint('🔄 更新 IBL 强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
-
-      // 重新加载 IBL 以应用新强度
-      await _viewer!.loadIbl(
-        'assets/environments/sky_output_1024_ibl.ktx',
-        intensity: _iblIntensity,
-        destroyExisting: true
-      );
-
-    } catch (e) {
-      debugPrint('❌ IBL 强度更新失败: $e');
-    }
-  }
-
-  // 光照系统初始化 - 基于设计师的 Three.js 点光源配置
-  Future<void> _initializeLighting() async {
-    if (_viewer == null) return;
-
-    try {
-      await _viewer!.destroyLights();
-
-      debugPrint('🎨 基于灯光师配置的物理正确光照...');
-
-      // 📍 严格按照Three.js配置 + 物理衰减转换
-
-      // 1. PointLight - 头部主光 (投影光源)
-      // Three.js: 位置(-0.31, 2.07, 0.57), 强度1.92, decay=2
-      await _viewer!.addDirectLight(DirectLight.point(
-        color: 5200.0,  // 16776693 → 5200K 暖白
-        intensity: 40000.0,  // 考虑物理衰减的正确强度
-        position: v.Vector3(-0.31, 2.07, 0.57),  // 严格按原位置
-        falloffRadius: 6.0,  // 模拟decay=2的衰减
-        castShadows: true,
-      ));
-
-      // 2. PointLight(1) - 左侧身体光 (衣服照明关键光源)
-      // Three.js: 位置(-1.22, 0.49, 0.75), 强度2.36, 颜色偏橙红
-      // 关键：这是衣服照明的主力，偏橙红色温增强红色材质反射
-      await _viewer!.addDirectLight(DirectLight.point(
-        color: 3200.0,  // 更暖的色温，精确匹配Three.js的16709345暖橙色调
-        intensity: 120000.0,  // 大幅增强强度，专门照亮衣服材质
-        position: v.Vector3(-1.22, 0.49, 0.75),  // 左后方，通过散射照明正面
-        falloffRadius: 2.8,  // 减小衰减范围，更聚焦于衣服区域
-        castShadows: false,
-      ));
-
-      // 3. PointLight(2) - 右侧平衡光 (衣服右侧照明)
-      // Three.js: 位置(0.45, 0.49, 0.91), 强度1.0, 中性白
-      await _viewer!.addDirectLight(DirectLight.point(
-        color: 5800.0,  // 稍微偏暖，平衡左侧
-        intensity: 50000.0,  // 提高强度，确保右侧衣服也有足够照明
-        position: v.Vector3(0.45, 0.49, 0.91),  // 右后方位置
-        falloffRadius: 4.0,  // 与左侧匹配
-        castShadows: false,
-      ));
-
-      // 4. PointLight(3) - 背后轮廓光
-      // Three.js: 位置(0.49, 0.82, -0.46), 强度2.52, decay=2
-      await _viewer!.addDirectLight(DirectLight.point(
-        color: 5800.0,  // 16109516 → 5800K 偏粉
-        intensity: 50000.0,  // 轮廓光强度
-        position: v.Vector3(0.49, 0.82, -0.46),  // 严格按原位置：背后
-        falloffRadius: 3.0,  // 小范围轮廓
-        castShadows: false,
-      ));
-
-      debugPrint('✅ 物理正确的灯光师配置已应用');
-      debugPrint('💡 4个点光源严格按Three.js位置，考虑decay=2衰减');
-
-    } catch (e) {
-      debugPrint('❌ 光照初始化失败: $e');
-    }
-  }
-
   Color _getFpsColor(double fps) {
     if (fps >= 50) return Colors.green;
     if (fps >= 30) return Colors.orange;
     return Colors.red;
   }
 
-  String _getViewAngleDescription(double theta) {
-    // 根据实际人物朝向重新定义角度描述
-    if (theta == 90) return '正面视角';  // 90度是人物正面
-    if (theta == 180) return '右侧视角';
-    if (theta == 270) return '背面视角';
-    if (theta == 0 || theta == 360) return '左侧视角';
-    
-    if (theta > 90 && theta < 180) return '右前方';
-    if (theta > 180 && theta < 270) return '右后方';
-    if (theta > 270 && theta < 360) return '左后方';
-    if (theta > 0 && theta < 90) return '左前方';
-    
-    return '自定义角度';
+  // 🎭 状态显示辅助方法
+  Color _getStateColor() {
+    switch (_currentState) {
+      case AnimState.idle:
+        return Colors.blue;
+      case AnimState.talk:
+        return Colors.orange;
+      case AnimState.none:
+        return Colors.grey;
+    }
   }
 
-  Color _getViewAngleColor(double theta) {
-    if (theta == 90) return Colors.green;   // 正面 - 绿色
-    if (theta == 180) return Colors.cyan;   // 右侧 - 青色
-    if (theta == 270) return Colors.orange; // 背面 - 橙色
-    if (theta == 0 || theta == 360) return Colors.purple; // 左侧 - 紫色
-    return Colors.blue;
+  IconData _getStateIcon() {
+    switch (_currentState) {
+      case AnimState.idle:
+        return Icons.self_improvement;
+      case AnimState.talk:
+        return Icons.record_voice_over;
+      case AnimState.none:
+        return Icons.pause_circle;
+    }
+  }
+
+  String _getStateText() {
+    switch (_currentState) {
+      case AnimState.idle:
+        return '待机中';
+      case AnimState.talk:
+        return '说话中';
+      case AnimState.none:
+        return '无状态';
+    }
   }
 
   void _toggleControlPanel() {
@@ -332,394 +724,6 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     }
   }
 
-// 🎮 画质预设系统（初始化用 - 不重新加载IBL）
-  Future<void> _setQualityWithoutIBL(String quality) async {
-    if (_viewer == null) return;
-
-    setState(() {
-      _currentQuality = quality;
-    });
-
-    try {
-      switch (quality) {
-        case 'high':
-          await _viewer!.setShadowType(ShadowType.PCSS);
-          await _viewer!.setSoftShadowOptions(2.5, 0.4);
-          debugPrint('🔥 高画质模式（初始化）');
-          break;
-        case 'medium':
-          await _viewer!.setShadowType(ShadowType.DPCF);
-          await _viewer!.setSoftShadowOptions(2.0, 0.5);
-          debugPrint('⚡ 中画质模式（初始化）');
-          break;
-        case 'low':
-          await _viewer!.setShadowType(ShadowType.PCF);
-          await _viewer!.setSoftShadowOptions(1.5, 0.6);
-          debugPrint('📱 低画质模式（初始化）');
-          break;
-      }
-
-    } catch (e) {
-      debugPrint('❌ 画质设置失败: $e');
-    }
-  }
-
-// 🎮 画质预设系统（用户操作用 - 会重新加载IBL）
-  Future<void> _setQuality(String quality) async {
-    if (_viewer == null) return;
-
-    setState(() {
-      _currentQuality = quality;
-    });
-
-    try {
-      switch (quality) {
-        case 'high':
-          await _viewer!.setShadowType(ShadowType.PCSS);
-          await _viewer!.setSoftShadowOptions(2.5, 0.4);
-          _iblIntensity = 25000.0;  // 对应设计师配置
-          debugPrint('🔥 高画质模式');
-          break;
-        case 'medium':
-          await _viewer!.setShadowType(ShadowType.DPCF);
-          await _viewer!.setSoftShadowOptions(2.0, 0.5);
-          _iblIntensity = 22000.0;  // 稍低
-          debugPrint('⚡ 中画质模式');
-          break;
-        case 'low':
-          await _viewer!.setShadowType(ShadowType.PCF);
-          await _viewer!.setSoftShadowOptions(1.5, 0.6);
-          _iblIntensity = 20000.0;  // 更低
-          debugPrint('📱 低画质模式');
-          break;
-      }
-
-      // 应用新的 IBL 强度
-      await _updateIblIntensity();
-
-    } catch (e) {
-      debugPrint('❌ 画质设置失败: $e');
-    }
-  }
-
-  // 🎭 动画系统方法
-  Future<void> _loadCharacterAnimations() async {
-    if (_viewer == null || _characterAsset == null) return;
-
-    try {
-      debugPrint('🎭 开始加载角色动画数据...');
-      
-      // 获取动画名称列表
-      final animations = await _characterAsset!.getGltfAnimationNames();
-      debugPrint('📋 发现 ${animations.length} 个动画: $animations');
-      
-      // 获取每个动画的时长
-      final durations = await Future.wait(
-        List.generate(animations.length, (i) => _characterAsset!.getGltfAnimationDuration(i))
-      );
-      
-      // 🎯 使用自定义名称或生成默认名称
-      final processedNames = <String>[];
-      for (int i = 0; i < animations.length; i++) {
-        String finalName;
-        if (_customAnimationNames.containsKey(i)) {
-          // 使用自定义名称
-          finalName = _customAnimationNames[i]!;
-        } else if (animations[i].isNotEmpty) {
-          // 使用原始名称
-          finalName = animations[i];
-        } else {
-          // 生成默认名称
-          finalName = "动画_${i + 1}";
-        }
-        processedNames.add(finalName);
-      }
-      
-      setState(() {
-        _animationNames = processedNames;
-        _animationDurations = durations;
-        _selectedAnimationIndex = animations.isNotEmpty ? 0 : -1;
-      });
-      
-      debugPrint('✅ 动画数据加载完成');
-      for (int i = 0; i < processedNames.length; i++) {
-        debugPrint('   ${i + 1}. ${processedNames[i]} (${durations[i].toStringAsFixed(1)}s)');
-      }
-      
-      // 🚨 检查动画名称问题
-      if (animations.isNotEmpty && animations[0].isEmpty) {
-        debugPrint('⚠️ 检测到动画名称丢失，这可能导致权重问题');
-        debugPrint('💡 建议解决方案:');
-        debugPrint('   1. 在 Blender 中重新导出 GLB 文件');
-        debugPrint('   2. 确保启用 "Include All Bone Influences"');
-        debugPrint('   3. 检查权重绘制是否正确');
-        debugPrint('   4. 尝试使用 FBX 格式转换');
-      }
-      
-      // 🎬 暂时不自动播放，测试静态模型
-      if (animations.isNotEmpty) {
-        debugPrint('🎬 发现动画但不自动播放，请手动测试: ${animations[0]}');
-        // await Future.delayed(const Duration(milliseconds: 500)); // 等待状态更新
-        // await _playAnimation();
-      }
-      
-    } catch (e) {
-      debugPrint('❌ 动画数据加载失败: $e');
-      setState(() {
-        _animationNames = [];
-        _animationDurations = [];
-        _selectedAnimationIndex = -1;
-      });
-    }
-  }
-
-  Future<void> _playAnimation() async {
-    if (_characterAsset == null || _selectedAnimationIndex == -1) {
-      debugPrint('⚠️ 无法播放动画：资源或索引无效');
-      return;
-    }
-
-    try {
-      debugPrint('▶️ 播放动画: ${_animationNames[_selectedAnimationIndex]} ${_autoLoop ? "(循环)" : ""}');
-      
-      // 🎭 使用循环播放让角色保持活跃
-      if (_autoLoop) {
-        await _characterAsset!.playGltfAnimation(_selectedAnimationIndex, loop: true);
-      } else {
-        await _characterAsset!.playGltfAnimation(_selectedAnimationIndex);
-      }
-      
-      setState(() {
-        _isAnimationPlaying = true;
-      });
-      
-    } catch (e) {
-      debugPrint('❌ 动画播放失败: $e');
-    }
-  }
-
-  Future<void> _stopAnimation() async {
-    if (_characterAsset == null || _selectedAnimationIndex == -1) return;
-
-    try {
-      debugPrint('⏹️ 停止动画: ${_animationNames[_selectedAnimationIndex]}');
-      await _characterAsset!.stopGltfAnimation(_selectedAnimationIndex);
-      
-      setState(() {
-        _isAnimationPlaying = false;
-      });
-      
-    } catch (e) {
-      debugPrint('❌ 动画停止失败: $e');
-    }
-  }
-
-  void _selectAnimation(int index) {
-    if (index >= 0 && index < _animationNames.length) {
-      setState(() {
-        _selectedAnimationIndex = index;
-        _isAnimationPlaying = false; // 切换动画时重置播放状态
-      });
-      debugPrint('🎯 选择动画: ${_animationNames[index]}');
-    }
-  }
-
-  // 🔄 重置模型到初始状态
-  Future<void> _resetModel() async {
-    if (_characterAsset == null) return;
-
-    try {
-      debugPrint('🔄 重置模型到初始状态...');
-      
-      // 停止所有动画
-      for (int i = 0; i < _animationNames.length; i++) {
-        try {
-          await _characterAsset!.stopGltfAnimation(i);
-        } catch (e) {
-          // 忽略停止动画的错误
-        }
-      }
-      
-      setState(() {
-        _isAnimationPlaying = false;
-      });
-      
-      debugPrint('✅ 模型已重置到初始状态');
-      
-    } catch (e) {
-      debugPrint('❌ 重置模型失败: $e');
-    }
-  }
-
-  // 🧪 尝试重新加载模型
-  Future<void> _reloadModel() async {
-    if (_viewer == null) return;
-
-    try {
-      debugPrint('🧪 尝试重新加载模型...');
-      
-      // 销毁当前资产
-      if (_characterAsset != null) {
-        await _viewer!.destroyAsset(_characterAsset!);
-        _characterAsset = null;
-      }
-      
-      // 清空动画数据
-      setState(() {
-        _animationNames = [];
-        _animationDurations = [];
-        _selectedAnimationIndex = -1;
-        _isAnimationPlaying = false;
-      });
-      
-      // 等待一下
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      // 重新加载
-      _characterAsset = await _viewer!.loadGltf('assets/models/character.glb');
-      debugPrint('🔄 模型重新加载完成');
-      
-      // 重新加载动画数据
-      await _loadCharacterAnimations();
-      
-    } catch (e) {
-      debugPrint('❌ 重新加载模型失败: $e');
-    }
-  }
-
-  // 🦴 权重诊断方法
-  Future<void> _diagnoseWeights() async {
-    if (_characterAsset == null) return;
-
-    try {
-      debugPrint('🦴 开始权重诊断...');
-      
-      // 检查模型边界
-      final bounds = await _characterAsset!.getBoundingBox();
-      final size = bounds.max - bounds.min;
-      debugPrint('📏 当前模型尺寸: ${size.x.toStringAsFixed(1)} x ${size.y.toStringAsFixed(1)} x ${size.z.toStringAsFixed(1)}');
-      
-      // 尝试获取动画相关信息
-      if (_animationNames.isNotEmpty) {
-        for (int i = 0; i < _animationNames.length; i++) {
-          try {
-            final animName = _animationNames[i].isEmpty ? "未命名动画_$i" : _animationNames[i];
-            final duration = _animationDurations[i];
-            debugPrint('🎭 动画 $i: $animName - 时长: ${duration}s');
-          } catch (e) {
-            debugPrint('❌ 无法获取动画 $i 信息: $e');
-          }
-        }
-      }
-      
-      // 权重问题诊断
-      debugPrint('🔍 权重问题分析:');
-      debugPrint('   - 动画名称丢失: ${_animationNames.isNotEmpty && _animationNames[0].isEmpty}');
-      debugPrint('   - 模型尺寸异常: ${size.y > 10.0}');
-      debugPrint('   - 建议: ${_animationNames.isNotEmpty && _animationNames[0].isEmpty ? "重新导出GLB文件" : "尝试安全播放模式"}');
-      
-    } catch (e) {
-      debugPrint('❌ 权重诊断失败: $e');
-    }
-  }
-
-  // 🎭 尝试安全播放模式（可能避免权重问题）
-  Future<void> _playSafeAnimation() async {
-    if (_characterAsset == null || _selectedAnimationIndex == -1) return;
-
-    try {
-      debugPrint('🛡️ 尝试安全播放模式...');
-      
-      // 先停止所有动画
-      await _resetModel();
-      await Future.delayed(const Duration(milliseconds: 200));
-      
-      // 使用最基础的播放方式，不循环
-      await _characterAsset!.playGltfAnimation(_selectedAnimationIndex);
-      
-      setState(() {
-        _isAnimationPlaying = true;
-      });
-      
-      debugPrint('✅ 安全模式播放完成');
-      
-    } catch (e) {
-      debugPrint('❌ 安全播放失败: $e');
-    }
-  }
-
-  // 🎯 尝试 transformToUnitCube 修复权重
-  Future<void> _tryTransformToUnitCube() async {
-    if (_characterAsset == null) return;
-
-    try {
-      debugPrint('🎯 尝试应用 transformToUnitCube 修复权重问题...');
-      
-      // 先停止动画
-      await _resetModel();
-      
-      // 应用单位立方体变换
-      await _characterAsset!.transformToUnitCube();
-      
-      // 重置相机
-      setState(() {
-        _cameraRadius = 3.0;
-      });
-      
-      await _updateSphericalCamera();
-      
-      debugPrint('✅ transformToUnitCube 应用完成，请测试动画');
-      
-    } catch (e) {
-      debugPrint('❌ transformToUnitCube 失败: $e');
-    }
-  }
-
-
-
-  // 🎭 快速设置常用动画名称
-  void _setCommonAnimationNames() {
-    final commonNames = ['待机', '走路', '跑步', '跳跃', '挥手', '舞蹈'];
-    
-    setState(() {
-      for (int i = 0; i < _animationNames.length && i < commonNames.length; i++) {
-        _animationNames[i] = commonNames[i];
-      }
-    });
-    
-    debugPrint('🎭 已应用常用动画名称');
-  }
-
-  Widget _buildControlButton({
-    required String label,
-    required void Function() onPressed,
-    required Color color,
-    bool isActive = false,
-  }) {
-    return Container(
-      margin: const EdgeInsets.all(4),
-      child: ElevatedButton(
-        onPressed: onPressed,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isActive ? color : color.withValues(alpha: 0.7),
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(25),
-          ),
-          elevation: isActive ? 8 : 4,
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildFloatingControlPanel() {
     return AnimatedBuilder(
       animation: _animationController,
@@ -729,316 +733,239 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
           child: Opacity(
             opacity: _animationController.value,
             child: Container(
-              margin: const EdgeInsets.only(bottom: 80),
-              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.9),
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.3),
-                    blurRadius: 15,
+                    color: Colors.black.withValues(alpha: 0.2),
+                    blurRadius: 20,
                     offset: const Offset(0, -5),
                   ),
                 ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 角度控制组
-                  const Text(
-                    '视角控制',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
+                  // 标题
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _buildControlButton(
-                        label: '正面',
-                        color: Colors.green,
-                        isActive: _cameraTheta == 90,
-                        onPressed: () {
-                          setState(() { _cameraTheta = 90; });
-                          _updateSphericalCamera(animate: true);  // 启用动画
-                        },
+                      Icon(
+                        _asset != null ? Icons.check_circle : Icons.error,
+                        color: _asset != null ? Colors.green : Colors.red,
+                        size: 24,
                       ),
-                      _buildControlButton(
-                        label: '右侧',
-                        color: Colors.cyan,
-                        isActive: _cameraTheta == 180,
-                        onPressed: () {
-                          setState(() { _cameraTheta = 180; });
-                          _updateSphericalCamera(animate: true);
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '背面',
-                        color: Colors.orange,
-                        isActive: _cameraTheta == 270,
-                        onPressed: () {
-                          setState(() { _cameraTheta = 270; });
-                          _updateSphericalCamera(animate: true);
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '左侧',
-                        color: Colors.purple,
-                        isActive: _cameraTheta == 0,
-                        onPressed: () {
-                          setState(() { _cameraTheta = 0; });
-                          _updateSphericalCamera(animate: true);
-                        },
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _asset != null ? '角色已加载' : '角色加载失败',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ],
                   ),
                   
-                  const SizedBox(height: 16),
-                  
-                  // 距离和焦点控制组
-                  const Text(
-                    '距离调节',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildControlButton(
-                        label: '近',
-                        color: Colors.teal,
-                        onPressed: () {
-                          setState(() {
-                            _cameraRadius = _cameraRadius > 2.0 ? _cameraRadius - 0.2 : 1.8;
-                          });
-                          _updateSphericalCamera();
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '远',
-                        color: Colors.teal,
-                        onPressed: () {
-                          setState(() {
-                            _cameraRadius = _cameraRadius < 4.2 ? _cameraRadius + 0.2 : 4.5;
-                          });
-                          _updateSphericalCamera();
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '上',
-                        color: Colors.amber,
-                        onPressed: () {
-                          setState(() {
-                            _focusY = _focusY < 0.9 ? _focusY + 0.05 : 1.0;
-                          });
-                          _updateSphericalCamera();
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '下',
-                        color: Colors.amber,
-                        onPressed: () {
-                          setState(() {
-                            _focusY = _focusY > 0.1 ? _focusY - 0.05 : 0.0;
-                          });
-                          _updateSphericalCamera();
-                        },
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 16),
-
-                  // 画质设置组
-                  const Text(
-                    '画质设置',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildControlButton(
-                        label: '🔥 高',
-                        color: Colors.red,
-                        isActive: _currentQuality == 'high',
-                        onPressed: () => _setQuality('high'),
-                      ),
-                      _buildControlButton(
-                        label: '⚡ 中',
-                        color: Colors.orange,
-                        isActive: _currentQuality == 'medium',
-                        onPressed: () => _setQuality('medium'),
-                      ),
-                      _buildControlButton(
-                        label: '📱 低',
-                        color: Colors.green,
-                        isActive: _currentQuality == 'low',
-                        onPressed: () => _setQuality('low'),
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 16),
-                  
-                  // 构图预设组
-                  const Text(
-                    '构图预设',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _buildControlButton(
-                        label: '🎯 最佳',
-                        color: Colors.green,
-                        isActive: _cameraRadius == 3.2 && _cameraPhi == 75.0,
-                        onPressed: () {
-                          setState(() {
-                            _cameraRadius = 3.2;
-                            _cameraPhi = 75.0;
-                            _focusY = 0.6;
-                          });
-                          _updateSphericalCamera(animate: true);
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '全身',
-                        color: Colors.indigo,
-                        onPressed: () {
-                          setState(() {
-                            _cameraRadius = 3.8;
-                            _cameraPhi = 78.0;
-                          });
-                          _updateSphericalCamera(animate: true);
-                        },
-                      ),
-                      _buildControlButton(
-                        label: '半身',
-                        color: Colors.indigo,
-                        onPressed: () {
-                          setState(() {
-                            _cameraRadius = 2.2;
-                            _cameraPhi = 72.0;
-                          });
-                          _updateSphericalCamera();
-                        },
-                      ),
-                    ],
-                  ),
-                  
-                  // 🎭 动画控制组
-                  if (_animationNames.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    const Text(
-                      '🎭 动画控制',
-                      style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
+                  if (_asset != null && gltfAnimations.isNotEmpty) ...[
+                    const SizedBox(height: 20),
                     
-                    // 动画选择下拉菜单
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[800],
-                        borderRadius: BorderRadius.circular(8),
+                    // 动画选择
+                    const Text(
+                      '选择动画:',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
                       ),
-                      child: DropdownButton<int>(
-                        value: _selectedAnimationIndex >= 0 ? _selectedAnimationIndex : null,
-                        hint: const Text('选择动画', style: TextStyle(color: Colors.white70)),
-                        dropdownColor: Colors.grey[800],
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
-                        underline: Container(),
+                    ),
+                    const SizedBox(height: 12),
+                    
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.grey.shade50,
+                      ),
+                      child: DropdownButton<String>(
+                        value: selectedGltfAnimation == -1 
+                            ? null 
+                            : gltfAnimations[selectedGltfAnimation],
+                        hint: const Text('选择一个动画'),
                         isExpanded: true,
-                        items: _animationNames.asMap().entries.map((entry) {
-                          final index = entry.key;
-                          final name = entry.value;
-                          final duration = _animationDurations[index];
-                          return DropdownMenuItem<int>(
-                            value: index,
+                        underline: Container(),
+                        items: gltfAnimations.map((animation) {
+                          return DropdownMenuItem<String>(
+                            value: animation,
                             child: Text(
-                              '$name (${duration.toStringAsFixed(1)}s)',
-                              style: const TextStyle(fontSize: 12),
+                              animation,
+                              style: const TextStyle(fontSize: 14),
                             ),
                           );
                         }).toList(),
-                        onChanged: (index) {
-                          if (index != null) {
-                            _selectAnimation(index);
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              selectedGltfAnimation = gltfAnimations.indexOf(value);
+                              isPlaying = false;
+                            });
+                            if (kDebugMode) {
+                              debugPrint('🎯 选择动画: $value');
+                            }
                           }
                         },
                       ),
                     ),
                     
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 20),
                     
-                    // 播放控制按钮
+                    // 状态显示
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _getStateColor().withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _getStateIcon(),
+                            color: _getStateColor(),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            '当前状态: ${_getStateText()}',
+                            style: TextStyle(
+                              color: _getStateColor(),
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // 动画状态控制按钮
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
                         _buildControlButton(
-                          label: _isAnimationPlaying ? '⏸️ 暂停' : '▶️ 播放',
-                          color: _isAnimationPlaying ? Colors.orange : Colors.green,
-                          isActive: _isAnimationPlaying,
-                          onPressed: _selectedAnimationIndex >= 0 
-                            ? (_isAnimationPlaying ? _stopAnimation : _playAnimation)
-                            : () {},
-                        ),
-                        _buildControlButton(
-                          label: '⏹️ 停止',
-                          color: Colors.red,
-                          onPressed: _selectedAnimationIndex >= 0 ? _stopAnimation : () {},
-                        ),
-                        _buildControlButton(
-                          label: '🔄 重置',
+                          icon: Icons.self_improvement,
+                          label: 'Idle',
                           color: Colors.blue,
-                          onPressed: _resetModel,
+                          onPressed: _idleAnimIndex >= 0 ? () => startIdleLoop() : null,
                         ),
-                      ],
-                    ),
-                    
-                    const SizedBox(height: 8),
-                    
-                    // 高级测试按钮
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
+                        
                         _buildControlButton(
-                          label: '🧪 重载',
+                          icon: Icons.record_voice_over,
+                          label: 'Talk循环',
+                          color: Colors.orange,
+                          onPressed: _talkAnimIndex >= 0 ? () => startTalkLoop() : null,
+                        ),
+                        
+                        _buildControlButton(
+                          icon: Icons.chat_bubble,
+                          label: 'Talk单次',
                           color: Colors.purple,
-                          onPressed: _reloadModel,
-                        ),
-                        _buildControlButton(
-                          label: '🦴 诊断',
-                          color: Colors.teal,
-                          onPressed: _diagnoseWeights,
-                        ),
-                        _buildControlButton(
-                          label: '🛡️ 安全播放',
-                          color: Colors.indigo,
-                          onPressed: _playSafeAnimation,
+                          onPressed: _talkAnimIndex >= 0 ? () => playTalkOnceThenIdle() : null,
                         ),
                       ],
                     ),
                     
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 16),
                     
-                    // 实验性修复按钮
+                    // 传统控制按钮
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
                         _buildControlButton(
-                          label: '🎯 单位化',
-                          color: Colors.amber,
-                          onPressed: _tryTransformToUnitCube,
+                          icon: Icons.play_arrow,
+                          label: '播放',
+                          color: Colors.green,
+                          onPressed: (selectedGltfAnimation >= 0 && !isPlaying) 
+                              ? () => _playGltfAnimation()
+                              : null,
                         ),
+                        
                         _buildControlButton(
-                          label: '🏷️ 重命名',
-                          color: Colors.pink,
-                          onPressed: _setCommonAnimationNames,
+                          icon: Icons.stop,
+                          label: '停止',
+                          color: Colors.red,
+                          onPressed: (selectedGltfAnimation >= 0 && isPlaying) 
+                              ? () => _stopGltfAnimation()
+                              : null,
+                        ),
+                        
+                        _buildControlButton(
+                          icon: Icons.refresh,
+                          label: '重置',
+                          color: Colors.blue,
+                          onPressed: () => _resetAllAnimations(),
                         ),
                       ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
+                    // 状态指示
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isPlaying 
+                            ? Colors.green.withValues(alpha: 0.1) 
+                            : Colors.grey.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isPlaying ? Icons.play_circle : Icons.pause_circle,
+                            color: isPlaying ? Colors.green : Colors.grey,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            isPlaying ? '动画播放中...' : '动画已停止',
+                            style: TextStyle(
+                              color: isPlaying ? Colors.green : Colors.grey,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else if (_asset != null) ...[
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.warning, color: Colors.orange, size: 24),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              '未发现动画数据\n请检查 GLB 文件是否包含动画',
+                              style: TextStyle(
+                                color: Colors.orange,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
@@ -1050,204 +977,109 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
     );
   }
 
+  Widget _buildControlButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    Function()? onPressed,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: onPressed != null ? color : Colors.grey,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: onPressed != null ? [
+              BoxShadow(
+                color: color.withValues(alpha: 0.3),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ] : null,
+          ),
+          child: IconButton(
+            onPressed: onPressed != null ? () => onPressed() : null,
+            icon: Icon(icon, color: Colors.white),
+            iconSize: 24,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: onPressed != null ? color : Colors.grey,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Thermion 3D 渲染'),
-        backgroundColor: Colors.blueGrey[800],
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: Icon(_showFpsOverlay ? Icons.visibility : Icons.visibility_off),
-            onPressed: () {
-              setState(() {
-                _showFpsOverlay = !_showFpsOverlay;
-              });
-            },
+    if (_thermionViewer == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.title)),
+        body: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('正在初始化 3D 引擎...'),
+            ],
           ),
-        ],
-      ),
+        ),
+      );
+    }
+
+    return Scaffold(
       body: Stack(
         children: [
-          // 3D 视图
-          ViewerWidget(
-            // 不自动加载模型，改为在 onViewerAvailable 中手动加载
-            // assetPath: 'assets/models/character.glb',
-            // 不在这里加载 IBL 和 Skybox，改为在 onViewerAvailable 中手动控制
-            // iblPath: 'assets/environments/sky_output_2048_ibl.ktx',
-            // skyboxPath: 'assets/environments/sky_output_2048_skybox.ktx',
-            transformToUnitCube: false, // 手动控制
-            manipulatorType: ManipulatorType.NONE,
-            //background: const Color(0xFF1A1A1A),  // 深色背景
-            onViewerAvailable: (viewer) async {
-              _viewer = viewer;
-              debugPrint('🚀 Thermion 3D 渲染系统初始化...');
-              debugPrint('📱 设备信息: ${MediaQuery.of(context).size}');
-
-              // 🚀 分阶段初始化，确保稳定性
-              
-              // 阶段1: 等待基础初始化
-              await Future.delayed(const Duration(milliseconds: 500));
-              
-              // 阶段2: 启用渲染设置
-              await viewer.setPostProcessing(true);
-              await viewer.setShadowsEnabled(true);
-
-              // 阶段3: 加载天空盒（先加载天空盒）
-              await viewer.loadSkybox('assets/environments/sky_env_skybox.ktx');
-
-              // 阶段4: 加载 IBL 并设置强度
-              await viewer.loadIbl(
-                'assets/environments/sky_output_1024_ibl.ktx',
-                intensity: _iblIntensity,  // 使用默认 IBL 强度
-                destroyExisting: true,
-              );
-
-              // 阶段5: 设置画质（不再重新加载 IBL）
-              await _setQualityWithoutIBL('high');
-
-              // 阶段6: 等待渲染管线稳定
-              await Future.delayed(const Duration(milliseconds: 200));
-
-              // 阶段7: 初始化光照
-              await _initializeLighting();
-              
-              // 阶段8: 设置相机
-              await _updateSphericalCamera();
-
-              // 阶段9: 启用渲染
-              await viewer.setRendering(true);
-
-              // 🎭 阶段10: 手动加载角色模型并获取动画数据
-              try {
-                debugPrint('🎭 开始加载角色模型: assets/models/character.glb');
-                _characterAsset = await viewer.loadGltf('assets/models/character.glb');
-                
-                // 🎯 根据模型边界决定是否需要缩放
-                final bounds = await _characterAsset!.getBoundingBox();
-                final height = bounds.max.y - bounds.min.y;
-                
-                if (height > 10.0) {
-                  debugPrint('📏 模型过大 (高度: ${height.toStringAsFixed(1)})，尝试 transformToUnitCube');
-                  // 🧪 尝试使用 transformToUnitCube 来修复权重问题
-                  try {
-                    await _characterAsset!.transformToUnitCube();
-                    debugPrint('✅ transformToUnitCube 应用成功');
-                    // 重置相机距离
-                    setState(() {
-                      _cameraRadius = 3.0;
-                    });
-                  } catch (e) {
-                    debugPrint('❌ transformToUnitCube 失败: $e');
-                    // 调整相机距离作为备选方案
-                    setState(() {
-                      _cameraRadius = height * 0.8;
-                    });
-                  }
-                } else {
-                  debugPrint('📏 模型尺寸合适 (高度: ${height.toStringAsFixed(1)})，保持原始设置');
-                }
-                
-                // 🔍 获取模型详细信息用于调试
-                try {
-                  final bounds = await _characterAsset!.getBoundingBox();
-                  debugPrint('📏 模型边界: min=${bounds.min}, max=${bounds.max}');
-                  
-                  // 🎯 尝试获取骨骼信息（如果API支持）
-                  debugPrint('🦴 开始检查骨骼和权重信息...');
-                  
-                } catch (e) {
-                  debugPrint('📏 无法获取模型信息: $e');
-                }
-                
-                debugPrint('✅ 角色模型加载完成（保持原始尺寸），开始加载动画数据...');
-                
-                // 加载动画数据
-                await _loadCharacterAnimations();
-                
-              } catch (e) {
-                debugPrint('❌ 角色模型加载失败: $e');
-              }
-              
-              debugPrint('✅ Thermion 3D 渲染系统设置完成');
-              debugPrint('📊 HDR 环境坐标系统: θ=0°(+Z正面), θ=180°(-Z背面)');
-              debugPrint('📊 当前相机角度: θ=$_cameraTheta° (${_cameraTheta == 0 ? "看向HDR正面" : _cameraTheta == 180 ? "看向HDR背面" : "侧面视角"})');
-              debugPrint('🎮 当前画质: $_currentQuality');
-              debugPrint('💡 IBL强度: ${(_iblIntensity/1000).toStringAsFixed(0)}K');
-            },
+          // 3D 视图 - 全屏显示
+          Positioned.fill(
+            child: ThermionListenerWidget(
+              inputHandler: _inputHandler,
+              child: ThermionWidget(
+                viewer: _thermionViewer!,
+              ),
+            ),
           ),
           
-          // 调试信息显示
+          // FPS 显示（左上角）
           if (_showFpsOverlay)
             Positioned(
-              top: 16,
-              right: 16,
+              top: 50,
+              left: 20,
               child: Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.7),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(20),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
+                    Icon(
+                      Icons.speed,
+                      color: _getFpsColor(_fps),
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
                     Text(
                       'FPS: ${_fps.toStringAsFixed(1)}',
                       style: TextStyle(
                         color: _getFpsColor(_fps),
+                        fontSize: 12,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    if (_useSphericalCamera) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        'R=${_cameraRadius.toStringAsFixed(1)}m θ=${_cameraTheta.toStringAsFixed(0)}°',
-                        style: const TextStyle(color: Colors.white, fontSize: 10),
-                      ),
-                      Text(
-                        'φ=${_cameraPhi.toStringAsFixed(0)}° Focus=${_focusY.toStringAsFixed(1)}',
-                        style: const TextStyle(color: Colors.white, fontSize: 10),
-                      ),
-                      Text(
-                        'IBL=${(_iblIntensity/1000).toStringAsFixed(0)}K',
-                        style: const TextStyle(color: Colors.white, fontSize: 10),
-                      ),
-                      Text(
-                        _getViewAngleDescription(_cameraTheta),
-                        style: TextStyle(
-                          color: _getViewAngleColor(_cameraTheta),
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                    // 🎭 动画状态信息
-                    if (_animationNames.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        '🎭 动画: ${_animationNames.length}个',
-                        style: const TextStyle(color: Colors.cyan, fontSize: 10),
-                      ),
-                      if (_selectedAnimationIndex >= 0) ...[
-                        Text(
-                          '当前: ${_animationNames[_selectedAnimationIndex]}',
-                          style: const TextStyle(color: Colors.white, fontSize: 9),
-                        ),
-                        Text(
-                          '状态: ${_isAnimationPlaying ? "播放中" : "已停止"}',
-                          style: TextStyle(
-                            color: _isAnimationPlaying ? Colors.green : Colors.grey,
-                            fontSize: 9,
-                          ),
-                        ),
-                      ],
-                    ],
                   ],
                 ),
               ),
             ),
-
-
           
           // 悬浮控制面板
           if (_isControlPanelOpen)
@@ -1258,23 +1090,160 @@ class _ThermionDemoState extends State<ThermionDemo> with TickerProviderStateMix
               child: _buildFloatingControlPanel(),
             ),
           
-          // 主悬浮按钮
+          // 主控制按钮
           Positioned(
             bottom: 20,
             right: 20,
-            child: FloatingActionButton(
-              onPressed: _toggleControlPanel,
-              backgroundColor: Colors.blue.withValues(alpha: 0.9),
-              child: AnimatedRotation(
-                turns: _isControlPanelOpen ? 0.125 : 0,
-                duration: const Duration(milliseconds: 300),
-                child: Icon(
-                  _isControlPanelOpen ? Icons.close : Icons.camera_alt,
-                  color: Colors.white,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // FPS 切换按钮
+                FloatingActionButton(
+                  heroTag: "fps",
+                  mini: true,
+                  onPressed: () {
+                    setState(() {
+                      _showFpsOverlay = !_showFpsOverlay;
+                    });
+                  },
+                  backgroundColor: Colors.teal.withValues(alpha: 0.9),
+                  child: Icon(
+                    _showFpsOverlay ? Icons.visibility : Icons.visibility_off,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                
+                // 重新加载按钮
+                FloatingActionButton(
+                  heroTag: "reload",
+                  mini: true,
+                  onPressed: () => _loadCharacter(_characterUri),
+                  backgroundColor: Colors.blue.withValues(alpha: 0.9),
+                  child: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                ),
+                const SizedBox(height: 12),
+                
+                // 主控制面板按钮
+                FloatingActionButton(
+                  heroTag: "control",
+                  mini: true,
+                  onPressed: _toggleControlPanel,
+                  backgroundColor: Colors.deepPurple.withValues(alpha: 0.9),
+                  child: AnimatedRotation(
+                    turns: _isControlPanelOpen ? 0.125 : 0,
+                    duration: const Duration(milliseconds: 300),
+                    child: Icon(
+                      _isControlPanelOpen ? Icons.close : Icons.settings,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          // 🎤 大播放按钮（中央底部）
+          Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: GestureDetector(
+                onTapDown: (_) {
+                  if (kDebugMode) {
+                    debugPrint('🎤 麦克风按钮按下');
+                  }
+                  setState(() {
+                    _isMicPressed = true;
+                  });
+                  // 按下时开始播放 talk
+                  if (_talkAnimIndex >= 0) {
+                    startTalkLoop();
+                  }
+                },
+                onTapUp: (_) {
+                  if (kDebugMode) {
+                    debugPrint('🎤 麦克风按钮松开');
+                  }
+                  setState(() {
+                    _isMicPressed = false;
+                  });
+                  // 松开时回到 idle
+                  startIdleLoop();
+                },
+                onTapCancel: () {
+                  if (kDebugMode) {
+                    debugPrint('🎤 麦克风按钮取消');
+                  }
+                  setState(() {
+                    _isMicPressed = false;
+                  });
+                  // 取消时也回到 idle
+                  startIdleLoop();
+                },
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    color: _isMicPressed || _currentState == AnimState.talk 
+                        ? Colors.orange.withValues(alpha: 0.9)
+                        : Colors.blue.withValues(alpha: 0.9),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        blurRadius: 15,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    _isMicPressed || _currentState == AnimState.talk 
+                        ? Icons.record_voice_over 
+                        : Icons.mic,
+                    color: Colors.white,
+                    size: 40,
+                  ),
                 ),
               ),
             ),
           ),
+          
+          // 状态指示器（右上角）
+          if (_asset != null)
+            Positioned(
+              top: 50,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: _getStateColor().withValues(alpha: 0.9),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _getStateIcon(),
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _getStateText(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
