@@ -22,9 +22,10 @@ class CameraRigConfig {
 CameraRigConfig _configFor(CameraPreset preset) {
   switch (preset) {
     case CameraPreset.soloCloseUp:
-      // 全身视角 - 基于 format.json 的相机参数优化
+      // 全身视角 - 基于 settings.json 的相机参数
+      // cameraFocalLength: 80.528mm 对应约 27度 FOV
       return CameraRigConfig(
-        fovDegrees: 45,  // 稍微增大视野，更自然
+        fovDegrees: 27,  // 根据 80.528mm 焦距换算
         eyeOffset: Vector3(0.0, 0.5, 2.8),  // 略微抬高视角，拉远距离
         centerOffset: Vector3(0.0, 0.5, 0.0),  // 看向模型中心
       );

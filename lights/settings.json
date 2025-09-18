@@ -112,7 +112,7 @@
 "enabled": true
 },
 "bloom": {
-"strength": 0.648,
+"strength": 0.544,
 "resolution": 384,
 "levels": 6,
 "blendMode": "ADD",
@@ -120,7 +120,7 @@
 "enabled": true,
 "highlight": 1000,
 "quality": "LOW",
-"lensFlare": false,
+"lensFlare": true,
 "starburst": true,
 "chromaticAberration": 0.005,
 "ghostCount": 4,
@@ -199,7 +199,7 @@
 },
 "mapSize": 1024,
 "shadowCascades": 1,
-"cascadeSplitPositions": [0.125, 0.25, 0.5]
+"cascadeSplitPositions": [0.152, 0.294, 0.5]
 "constantBias": 0.001,
 "normalBias": 1,
 "shadowFar": 0,
@@ -219,20 +219,20 @@
 "penumbraScale": 1,
 "penumbraRatioScale": 1
 },
-"sunlightIntensity": 64800,
+"sunlightIntensity": 49200,
 "sunlightHaloSize": 10,
-"sunlightHaloFalloff": 80,
-"sunlightAngularRadius": 1.9,
+"sunlightHaloFalloff": 137.12,
+"sunlightAngularRadius": 2.534,
 "sunlightDirection": [0.193603, -0.213967, -0.957463],
 "sunlightColor": [0.955105, 0.827571, 0.767769],
-"iblIntensity": 74800,
+"iblIntensity": 58000,
 "iblRotation": 0
 },
 "viewer": {
 "cameraAperture": 16,
 "cameraSpeed": 125,
 "cameraISO": 100,
-"cameraNear": 0.1,
+"cameraNear": 0.416,
 "cameraFar": 100,
 "cameraEyeOcularDistance": 0,
 "cameraEyeToeIn": 0,

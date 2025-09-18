@@ -17,36 +17,52 @@ void main() {
 //
 
 
-// 基于 format.json 的专业灯光配置
+// 基于最新 settings.json 的专业灯光配置
 Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
   try {
     await viewer.destroyLights();
   } catch (_) {}
 
-  // 根据 format.json 配置主太阳光
-  // direction: [0.194, -0.214, -0.957] 表示光线从右上前方照射
+  // 主太阳光 - 降低强度，避免过曝
+  // sunlightColor: [0.955105, 0.827571, 0.767769] 对应暖白色
+  // 通过色温近似: ~5400K (暖白)
   await viewer.addDirectLight(DirectLight.sun(
-    color: 5800.0,                    // 中性色温
-    intensity: 64800.0,                // format.json 中的太阳光强度
+    color: 5400.0,                    // 暖白色温
+    intensity: 42000.0,                // 降低主光强度，避免正面过亮
     castShadows: true,                 // 启用阴影
-    direction: Vector3(0.194, -0.214, -0.957), // 使用 format.json 的方向
+    direction: Vector3(0.193603, -0.213967, -0.957463), // settings.json 精确方向
   ));
 
-  // 添加补充光源（更柔和的效果）
-  // Fill light - 从正面略上方补光，减少阴影
+  // 正面补光 - 增强正面填充
   await viewer.addDirectLight(DirectLight.sun(
     color: 5600.0,                    // 稍暖的补光
-    intensity: 20000.0,               // 较弱的补光
+    intensity: 30000.0,               // 增强正面补光
     castShadows: false,
-    direction: Vector3(0.0, -0.3, -1.0).normalized(),
+    direction: Vector3(0.1, -0.4, -0.9).normalized(),
   ));
 
-  // Rim light - 轮廓光，从后方照射
+  // 背面环境光 - 解决背面全黑问题
   await viewer.addDirectLight(DirectLight.sun(
-    color: 6500.0,                    // 冷色轮廓光
-    intensity: 15000.0,               // 中等强度
+    color: 5800.0,                    // 中性暖光
+    intensity: 25000.0,               // 中等强度背光
     castShadows: false,
-    direction: Vector3(-0.5, -0.2, 0.8).normalized(),
+    direction: Vector3(-0.2, -0.3, 0.9).normalized(), // 从背面照射
+  ));
+
+  // 左侧补光 - 减少侧面阴影
+  await viewer.addDirectLight(DirectLight.sun(
+    color: 5700.0,                    // 中性光
+    intensity: 18000.0,               // 适中强度
+    castShadows: false,
+    direction: Vector3(-0.8, -0.2, -0.3).normalized(), // 从左侧照射
+  ));
+
+  // 右侧轮廓光 - 保持立体感
+  await viewer.addDirectLight(DirectLight.sun(
+    color: 6200.0,                    // 稍冷的轮廓光
+    intensity: 15000.0,               // 适度轮廓光
+    castShadows: false,
+    direction: Vector3(0.8, -0.1, 0.5).normalized(), // 从右侧照射
   ));
 
   try {
@@ -86,7 +102,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   ThermionAsset? _asset;
   
   // 🎭 测试用的角色模型路径
-  final _characterUri = "assets/models/xiaomeng_ani_0918.glb";
+  final _characterUri = "assets/models/xiaomeng_ani_0918_2.glb";
 
   // 动画相关
   final gltfAnimations = <String>[];
@@ -761,21 +777,89 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       // 🎥 设置相机视角（预设）
       await applyCameraPreset(_thermionViewer!, preset: CameraPreset.soloCloseUp, characterCenter: null);
 
-      // 🌅 加载环境光照（基于 format.json 的配置）
-      await _thermionViewer!.loadSkybox("assets/environments/city_env_skybox.ktx");
-      await _thermionViewer!.loadIbl("assets/environments/city_env_ibl.ktx", intensity: 74800.0);
+      // 🌅 加载环境光照（基于新 settings.json 的配置）
+      try {
+        if (kDebugMode) {
+          debugPrint('📦 开始加载 Skybox...');
+        }
+        await _thermionViewer!.loadSkybox("assets/environments/studio_env_skybox.ktx");
+        if (kDebugMode) {
+          debugPrint('✅ Skybox 加载完成');
+        }
+
+        // 尝试启用 skybox 显示
+        try {
+          // await _thermionViewer!.setSkyboxVisible(true);
+          if (kDebugMode) {
+            debugPrint('🌌 尝试启用 Skybox 显示');
+          }
+        } catch (skyboxError) {
+          if (kDebugMode) {
+            debugPrint('⚠️ Skybox 显示设置失败: $skyboxError');
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('❌ Skybox 加载失败: $e');
+        }
+      }
+
+      try {
+        if (kDebugMode) {
+          debugPrint('💡 开始加载 IBL...');
+        }
+        await _thermionViewer!.loadIbl("assets/environments/studio_env_ibl.ktx", intensity: 32000.0);
+        if (kDebugMode) {
+          debugPrint('✅ IBL 加载完成 (强度: 48000)');
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('❌ IBL 加载失败: $e');
+        }
+      }
 
       // 💡 应用专业灯光配置
-      await applyLightsFromSpec(_thermionViewer!);
+      await applyLightsFromSpec(_thermionViewer!); 
 
-      // 🎨 应用后处理效果（基于 format.json）
+      // 🏢 启用地面平面和阴影（基于 settings.json）
+      // groundPlaneEnabled: true, groundShadowStrength: 0.75
+      try {
+        // await _thermionViewer!.enableGroundPlane(true);
+        // await _thermionViewer!.setGroundShadowStrength(0.75);
+        if (kDebugMode) {
+          debugPrint('🏢 地面平面设置已配置');
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('⚠️ 地面平面设置失败: $e');
+        }
+      }
+
+      // 🎨 应用后处理效果（基于 settings.json）
       await _thermionViewer!.setPostProcessing(true);
 
+      // Tone Mapping - ACES 是最接近 ACES_LEGACY 的选项
+      await _thermionViewer!.setToneMapping(ToneMapper.ACES);
+
       // Bloom 效果
-      await _thermionViewer!.setBloom(true, 0.648);  // enabled, strength from format.json
+      await _thermionViewer!.setBloom(true, 0.544);  // enabled, strength from new settings.json
 
       // 抗锯齿 (MSAA, FXAA, TAA)
-      await _thermionViewer!.setAntiAliasing(true, true, false);  // MSAA on, FXAA on, TAA off per format.json
+      await _thermionViewer!.setAntiAliasing(true, true, false);  // MSAA on, FXAA on, TAA off
+
+      // 🔆 调整曝光度以提升整体亮度（基于 settings.json 的相机参数）
+      // cameraAperture: 16, cameraSpeed: 125, cameraISO: 100
+      try {
+        final camera = await _thermionViewer!.getActiveCamera();
+        await camera.setExposure(16.0, 1.0 / 125.0, 100.0);  // aperture, shutterSpeed, ISO
+        if (kDebugMode) {
+          debugPrint('📷 相机曝光已设置: f/16, 1/125s, ISO100');
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('⚠️ 相机曝光设置失败: $e');
+        }
+      }
 
       // 启用渲染
       await _thermionViewer!.setRendering(true);
