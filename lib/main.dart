@@ -4,6 +4,8 @@ import 'package:flutter/material.dart' hide View;
 import 'package:flutter/scheduler.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' hide Colors;
+import 'lip_sync_controller.dart';
+import 'pages/scene_demo_page.dart';
 
 // 🎭 动画状态枚举
 enum AnimState { none, idle, talk }
@@ -12,72 +14,7 @@ void main() {
   runApp(const MyApp());
 }
 
-
-// Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
-//   // 清旧灯，避免叠加
-//   try { await viewer.destroyLights(); } catch (_) {}
-
-//   // 你的对焦点（只用于算方向，不改相机）
-//   final Vector3 focus = Vector3(0.0, 1.10, 0.0);
-
-//   Vector3 _dirFromPosToFocus(Vector3 pos, Vector3 target) {
-//     final d = target - pos; d.normalize(); return d;
-//   }
-
-//   Future<void> _sun({
-//     required double kelvin,      // Filament: 色温 double
-//     required double intensity,
-//     required Vector3 dir,
-//     bool shadows = false,
-//   }) async {
-//     await viewer.addDirectLight(DirectLight.sun(
-//       color: kelvin,
-//       intensity: intensity,
-//       castShadows: shadows,
-//       direction: dir,
-//     ));
-//   }
-
-//   // 统一增益（整体亮度旋钮）：IBL 仍在，所以把方向光提到主导层级
-//   const double kScale = 20000.0;   // 觉得还亮不够就 22000 / 24000
-
-//   // 1) “环境兜底” —— 极弱顶部中性光（有 IBL 就更轻）
-//   await _sun(
-//     kelvin: 6500.0,
-//     intensity: 1200.0,                 // 原来 1500 → 更弱，只抹死黑
-//     dir: Vector3(0.0, -1.0, -0.20),
-//     shadows: false,
-//   );
-
-//   // 2) 暖色补光（由 PointLight 近似）
-//   final Vector3 pointPos = Vector3(0.316, 0.896, -0.172);
-//   await _sun(
-//     kelvin: 5600.0,                    // 略暖
-//     intensity: 1.60 * kScale,          // 原来 1.35*kScale → 1.60*kScale
-//     dir: _dirFromPosToFocus(pointPos, focus),
-//     shadows: false,
-//   );
-
-//   // 3) 主光（Directional）—— 开阴影，方向更“擦面”
-//   final Vector3 dirPos = Vector3(-2.248, 2.00, 2.806);   // y 再低一点更擦面
-//   await _sun(
-//     kelvin: 6200.0,                    // 中性略冷
-//     intensity: 3.60 * kScale,          // 原来 3.20*kScale → 3.60*kScale
-//     dir: _dirFromPosToFocus(dirPos, focus),
-//     shadows: true,
-//   );
-
-//   // 4) 冷色轮廓光（新增，提升发丝/肩线的立体感；不投影）
-//   final Vector3 rimPos = Vector3(0.9, 1.8, -2.2);        // 右后上
-//   await _sun(
-//     kelvin: 8200.0,                    // 偏冷
-//     intensity: 1.20 * kScale,          // 适中，主要勾边
-//     dir: _dirFromPosToFocus(rimPos, focus),
-//     shadows: false,
-//   );
-
-//   try { await viewer.setRendering(true); } catch (_) {}
-// }
+//
 
 
 Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
@@ -190,7 +127,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   ThermionAsset? _asset;
   
   // 🎭 测试用的角色模型路径
-  final _characterUri = "assets/models/erciyuan.glb";
+  final _characterUri = "assets/models/erciyuan_fix.glb";
 
   // 动画相关
   final gltfAnimations = <String>[];
@@ -218,6 +155,12 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   
   // 按钮按下状态
   bool _isMicPressed = false;
+  
+  // 🎤 口型同步控制器
+  LipSyncController? _lipSyncController;
+  // 口型参数（UI）
+  bool _lipSmooth = true;
+  double _lipPhaseMs = 0.0; // -300..+300
 
   Future _loadCharacter(String? uri) async {
     if (_asset != null) {
@@ -283,6 +226,40 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           debugPrint('✅ 角色加载完成');
           debugPrint('🎭 Idle 动画索引: $_idleAnimIndex');
           debugPrint('🎭 Talk 动画索引: $_talkAnimIndex');
+          
+          // 检查模型的其他信息
+          debugPrint('🔍 检查模型详细信息...');
+          try {
+            final bounds = await _asset!.getBoundingBox();
+            debugPrint('🔍 模型边界: ${bounds.min} 到 ${bounds.max}');
+            
+            // 检查动画数量（使用已有的 gltfAnimations）
+            debugPrint('🔍 动画数量: ${gltfAnimations.length}');
+            
+            // 检查实体详情
+            final entities = await _asset!.getChildEntities();
+            for (int i = 0; i < entities.length && i < 5; i++) {
+              try {
+                final morphTargets = await _asset!.getMorphTargetNames(entity: entities[i]);
+                debugPrint('🔍 实体 $i morph targets: ${morphTargets.length}');
+                if (morphTargets.isNotEmpty && i == 2) {
+                  debugPrint('🔍 实体 $i 的前5个 morph targets: ${morphTargets.take(5).join(', ')}');
+                }
+              } catch (e) {
+                debugPrint('🔍 实体 $i 无法获取 morph targets: $e');
+              }
+            }
+          } catch (e) {
+            debugPrint('🔍 检查模型信息失败: $e');
+          }
+        }
+        
+        // � 初始化始口型同步控制器
+        await _initializeLipSync();
+        // 同步 UI 状态到控制器
+        if (_lipSyncController != null) {
+          _lipSyncController!.enableSmoothing = _lipSmooth;
+          _lipSyncController!.phaseOffsetMs = _lipPhaseMs;
         }
         
         // 🎬 自动开始 idle 循环
@@ -364,30 +341,47 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       }
     }
     
+    // 优先选择干净的动画名称（不包含 skeleton 和 # 符号）
+    int bestIdleIndex = -1;
+    int bestTalkIndex = -1;
+    
     for (int i = 0; i < animations.length; i++) {
       final animName = animations[i].toLowerCase();
+      final isCleanName = !animName.contains('skeleton') && !animName.contains('#');
       
       // 匹配 idle 动画
-      if (_idleAnimIndex == -1 && 
-          (animName.contains('idle') || 
+      if ((animName.contains('idle') || 
            animName.contains('wait') || 
            animName.contains('stand'))) {
-        _idleAnimIndex = i;
-        if (kDebugMode) {
-          debugPrint('✅ 找到 Idle 动画: $i (${animations[i]})');
+        if (bestIdleIndex == -1 || isCleanName) {
+          bestIdleIndex = i;
+          if (kDebugMode) {
+            debugPrint('🎯 候选 Idle 动画: $i (${animations[i]}) ${isCleanName ? "[干净名称]" : "[包含特殊符号]"}');
+          }
         }
       }
       
       // 匹配 talk 动画
-      if (_talkAnimIndex == -1 && 
-          (animName.contains('talk') || 
+      if ((animName.contains('talk') || 
            animName.contains('speak') || 
            animName.contains('speech'))) {
-        _talkAnimIndex = i;
-        if (kDebugMode) {
-          debugPrint('✅ 找到 Talk 动画: $i (${animations[i]})');
+        if (bestTalkIndex == -1 || isCleanName) {
+          bestTalkIndex = i;
+          if (kDebugMode) {
+            debugPrint('🎯 候选 Talk 动画: $i (${animations[i]}) ${isCleanName ? "[干净名称]" : "[包含特殊符号]"}');
+          }
         }
       }
+    }
+    
+    _idleAnimIndex = bestIdleIndex;
+    _talkAnimIndex = bestTalkIndex;
+    
+    if (_idleAnimIndex >= 0 && kDebugMode) {
+      debugPrint('✅ 最终选择 Idle 动画: $_idleAnimIndex (${animations[_idleAnimIndex]})');
+    }
+    if (_talkAnimIndex >= 0 && kDebugMode) {
+      debugPrint('✅ 最终选择 Talk 动画: $_talkAnimIndex (${animations[_talkAnimIndex]})');
     }
     
     // 兜底策略 - 只设置 idle，不自动设置 talk
@@ -439,6 +433,13 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   // 🔄 开始 Idle 循环
   Future<void> startIdleLoop() async {
     if (_asset == null || _idleAnimIndex == -1) return;
+    // 如果正在进行口型同步，则禁止进入 Idle 循环
+    if (_lipSyncController?.isPlaying == true) {
+      if (kDebugMode) {
+        debugPrint('⏸️ 口型同步进行中，暂不进入 Idle');
+      }
+      return;
+    }
     // 移除防重复检查，允许强制切换到 idle
     
     try {
@@ -556,6 +557,196 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     }
   }
 
+  // 🎤 初始化口型同步控制器
+  Future<void> _initializeLipSync() async {
+    if (_asset == null) return;
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🎤 初始化口型同步控制器...');
+      }
+      
+      _lipSyncController = LipSyncController(_asset!);
+      
+      // 加载 blendshape 数据
+      await _lipSyncController!.loadBlendshapeData('assets/wav/bs.json');
+      
+      // 加载 morph target 名称
+      await _lipSyncController!.loadMorphTargetNames();
+      // 初始化默认参数
+      _lipSyncController!.enableSmoothing = _lipSmooth;
+      _lipSyncController!.phaseOffsetMs = _lipPhaseMs;
+      
+      if (kDebugMode) {
+        debugPrint('✅ 口型同步控制器初始化完成');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 口型同步控制器初始化失败: $e');
+      }
+    }
+  }
+
+  // 🎤 播放口型同步
+  Future<void> _playLipSync() async {
+    if (_lipSyncController == null) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 口型同步控制器未初始化');
+      }
+      return;
+    }
+    
+    try {
+      if (kDebugMode) {
+        debugPrint('🎤 开始播放口型同步...');
+      }
+      
+      await _lipSyncController!.playLipSync(
+        audioPath: 'wav/output.wav',
+        frameRate: 60.0,
+        attenuation: 0.8, // 降低幅度，使用更接近“默认数据”的嘴型
+        // 更强：播放前停止所有动画，结束后恢复 Idle 循环
+        pauseIdleAnimation: () async {
+          await _stopAllAnimations();
+          if (kDebugMode) debugPrint('🎤 已停止所有动画以避免与 morph 竞争');
+        },
+        resumeIdleAnimation: () async {
+          await startIdleLoop();
+          if (kDebugMode) debugPrint('🎤 已恢复 Idle 循环');
+        },
+      );
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 播放口型同步失败: $e');
+      }
+    }
+  }
+
+  // 🎤 停止口型同步
+  Future<void> _stopLipSync() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.stopLipSync();
+    }
+  }
+
+  // 🧪 测试 Morph Targets
+  Future<void> _testMorphTargets() async {
+    if (_asset == null) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 模型未加载');
+      }
+      return;
+    }
+
+    try {
+      if (kDebugMode) {
+        debugPrint('🧪 开始全面测试 Morph Targets...');
+        debugPrint('🧪 暂停所有动画以避免冲突...');
+      }
+
+      // 暂停所有动画（通过停止播放）
+      if (_idleAnimIndex >= 0) {
+        await _asset!.stopGltfAnimation(_idleAnimIndex);
+      }
+      if (_talkAnimIndex >= 0) {
+        await _asset!.stopGltfAnimation(_talkAnimIndex);
+      }
+
+      final childEntities = await _asset!.getChildEntities();
+      if (kDebugMode) {
+        debugPrint('🧪 总共有 ${childEntities.length} 个子实体');
+      }
+
+      // 测试所有实体
+      for (int entityIndex = 0; entityIndex < childEntities.length; entityIndex++) {
+        try {
+          final entity = childEntities[entityIndex];
+          final morphTargets = await _asset!.getMorphTargetNames(entity: entity);
+          
+          if (morphTargets.isNotEmpty) {
+            if (kDebugMode) {
+              debugPrint('🧪 实体 $entityIndex 有 ${morphTargets.length} 个 morph targets');
+            }
+            
+            // 创建测试权重：尝试不同的权重值范围
+            final testWeights = List.filled(morphTargets.length, 10.0); // 尝试更大的值
+            
+            if (kDebugMode) {
+              debugPrint('🧪 对实体 $entityIndex 应用最大权重测试...');
+            }
+            
+            // 应用测试权重
+            await _asset!.setMorphTargetWeights(entity, testWeights);
+            
+            if (kDebugMode) {
+              debugPrint('🧪 实体 $entityIndex 权重已应用，等待2秒观察效果...');
+            }
+            
+            // 等待2秒观察效果
+            await Future.delayed(const Duration(seconds: 2));
+            
+            // 重置权重
+            final resetWeights = List.filled(morphTargets.length, 0.0);
+            await _asset!.setMorphTargetWeights(entity, resetWeights);
+            
+            if (kDebugMode) {
+              debugPrint('🧪 实体 $entityIndex 权重已重置');
+            }
+            
+            // 如果这是实体2，额外测试单个权重
+            if (entityIndex == 2) {
+              if (kDebugMode) {
+                debugPrint('🧪 对实体2进行单个权重测试...');
+              }
+              
+              // 逐个测试前10个权重，使用更大的值
+              for (int i = 0; i < morphTargets.length && i < 10; i++) {
+                final singleTestWeights = List.filled(morphTargets.length, 0.0);
+                singleTestWeights[i] = 10.0; // 尝试更大的值
+                
+                if (kDebugMode) {
+                  debugPrint('🧪 测试单个权重: ${morphTargets[i]} = 1.0');
+                }
+                
+                await _asset!.setMorphTargetWeights(entity, singleTestWeights);
+                await Future.delayed(const Duration(milliseconds: 500));
+                
+                // 重置
+                await _asset!.setMorphTargetWeights(entity, resetWeights);
+                await Future.delayed(const Duration(milliseconds: 200));
+              }
+            }
+          }
+        } catch (entityError) {
+          if (kDebugMode) {
+            debugPrint('❌ 测试实体 $entityIndex 失败: $entityError');
+          }
+        }
+      }
+      
+      if (kDebugMode) {
+        debugPrint('🧪 全面测试完成');
+        debugPrint('🧪 恢复 idle 动画...');
+      }
+
+      // 恢复 idle 动画
+      if (_idleAnimIndex >= 0) {
+        await _asset!.playGltfAnimation(_idleAnimIndex, loop: true);
+        _currentState = AnimState.idle;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 测试 Morph Targets 失败: $e');
+      }
+      
+      // 确保恢复动画
+      if (_idleAnimIndex >= 0) {
+        await _asset!.playGltfAnimation(_idleAnimIndex, loop: true);
+        _currentState = AnimState.idle;
+      }
+    }
+  }
+
   // 🔄 重置所有动画
   Future _resetAllAnimations() async {
     if (_asset == null) return;
@@ -604,7 +795,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
 
       // 🎥 设置相机位置
       final camera = await _thermionViewer!.getActiveCamera();
-      await camera.lookAt(Vector3(0.5, 1.0, 3.5));
+      await camera.lookAt(Vector3(0, 1.0, 2.0));
 
       // 🌅 加载官方默认环境
       await _thermionViewer!.loadSkybox("assets/default_env_skybox.ktx");
@@ -640,6 +831,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     _animationController.dispose();
     _fpsTimer?.cancel();
     _talkTimer?.cancel(); // 清理说话定时器
+    _lipSyncController?.dispose(); // 清理口型同步控制器
     super.dispose();
   }
 
@@ -915,6 +1107,84 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                     
                     const SizedBox(height: 16),
                     
+                    // 🎤 口型同步控制
+                    const Text(
+                      '🎤 口型同步',
+                      style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    // 平滑插值开关
+                    Row(
+                      children: [
+                        const Text(
+                          '平滑插值',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                        const SizedBox(width: 6),
+                        Switch(
+                          value: _lipSmooth,
+                          onChanged: (v) {
+                            setState(() {
+                              _lipSmooth = v;
+                            });
+                            _lipSyncController?.enableSmoothing = v;
+                          },
+                          activeColor: Colors.greenAccent,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _lipSmooth ? 'ON' : 'OFF',
+                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                        )
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 相位偏移滑条
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '相位偏移: ${_lipPhaseMs.toStringAsFixed(0)} ms',
+                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                        Slider(
+                          value: _lipPhaseMs.clamp(-300.0, 300.0),
+                          min: -300,
+                          max: 300,
+                          divisions: 60,
+                          onChanged: (v) {
+                            setState(() {
+                              _lipPhaseMs = v;
+                            });
+                            if (_lipSyncController != null) {
+                              _lipSyncController!.phaseOffsetMs = v;
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          icon: Icons.record_voice_over,
+                          label: '播放同步',
+                          color: Colors.green,
+                          onPressed: () => _playLipSync(),
+                        ),
+                        
+                        _buildControlButton(
+                          icon: Icons.stop_circle,
+                          label: '停止同步',
+                          color: Colors.red,
+                          onPressed: () => _stopLipSync(),
+                        ),
+                      ],
+                    ),
+                    
+                    const SizedBox(height: 16),
+                    
                     // 状态指示
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -1021,7 +1291,21 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     if (_thermionViewer == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.title)),
+        appBar: AppBar(
+          title: Text(widget.title),
+          actions: [
+            IconButton(
+              tooltip: '场景示例',
+              icon: const Icon(Icons.travel_explore),
+              onPressed: () async {
+                if (!mounted) return;
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SceneDemoPage()),
+                );
+              },
+            ),
+          ],
+        ),
         body: const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -1036,6 +1320,23 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     }
 
     return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            tooltip: '场景示例',
+            icon: const Icon(Icons.travel_explore),
+            onPressed: () async {
+              if (!mounted) return;
+              try { await _thermionViewer?.setRendering(false); } catch (_) {}
+              await Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SceneDemoPage()),
+              );
+              try { await _thermionViewer?.setRendering(true); } catch (_) {}
+            },
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           // 3D 视图 - 全屏显示
@@ -1124,6 +1425,21 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                   child: const Icon(Icons.refresh, color: Colors.white, size: 20),
                 ),
                 const SizedBox(height: 12),
+                
+                // 测试 Morph Target 按钮
+                FloatingActionButton(
+                  heroTag: "test_morph",
+                  mini: true,
+                  onPressed: _testMorphTargets,
+                  backgroundColor: Colors.red.withValues(alpha: 0.9),
+                  child: const Icon(
+                    Icons.face,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
+                
+                const SizedBox(height: 10),
                 
                 // 主控制面板按钮
                 FloatingActionButton(
