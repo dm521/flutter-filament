@@ -8,10 +8,10 @@
 },
 "taa": {
 "filterWidth": 1,
-"feedback": 0.248,
+"feedback": 0.12,
 "lodBias": -1,
 "sharpness": 0,
-"enabled": false,
+"enabled": true,
 "upscaling": false,
 "filterHistory": true,
 "filterInput": true,
@@ -112,7 +112,7 @@
 "enabled": true
 },
 "bloom": {
-"strength": 0.544,
+"strength": 0.348,
 "resolution": 384,
 "levels": 6,
 "blendMode": "ADD",
@@ -199,7 +199,7 @@
 },
 "mapSize": 1024,
 "shadowCascades": 1,
-"cascadeSplitPositions": [0.152, 0.294, 0.5]
+"cascadeSplitPositions": [0.125, 0.25, 0.5]
 "constantBias": 0.001,
 "normalBias": 1,
 "shadowFar": 0,
@@ -219,20 +219,20 @@
 "penumbraScale": 1,
 "penumbraRatioScale": 1
 },
-"sunlightIntensity": 49200,
+"sunlightIntensity": 75000,
 "sunlightHaloSize": 10,
-"sunlightHaloFalloff": 137.12,
-"sunlightAngularRadius": 2.534,
-"sunlightDirection": [0.193603, -0.213967, -0.957463],
+"sunlightHaloFalloff": 80,
+"sunlightAngularRadius": 1.9,
+"sunlightDirection": [0.366695, -0.357967, -0.858717],
 "sunlightColor": [0.955105, 0.827571, 0.767769],
-"iblIntensity": 58000,
-"iblRotation": 0
+"iblIntensity": 15600,
+"iblRotation": 0.558505
 },
 "viewer": {
 "cameraAperture": 16,
 "cameraSpeed": 125,
 "cameraISO": 100,
-"cameraNear": 0.416,
+"cameraNear": 0.1,
 "cameraFar": 100,
 "cameraEyeOcularDistance": 0,
 "cameraEyeToeIn": 0,
@@ -240,7 +240,7 @@
 "groundPlaneEnabled": true,
 "skyboxEnabled": true,
 "backgroundColor": [0, 0, 0],
-"cameraFocalLength": 80.528,
+"cameraFocalLength": 46.488,
 "cameraFocusDistance": 10,
 "autoInstancingEnabled": false,
 "autoScaleEnabled": true

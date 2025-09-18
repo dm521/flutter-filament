@@ -23,14 +23,14 @@ Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
     await viewer.destroyLights();
   } catch (_) {}
 
-  // 主太阳光 - 降低强度，避免过曝
+  // 主太阳光 - 基于新 settings.json 参数
   // sunlightColor: [0.955105, 0.827571, 0.767769] 对应暖白色
   // 通过色温近似: ~5400K (暖白)
   await viewer.addDirectLight(DirectLight.sun(
     color: 5400.0,                    // 暖白色温
-    intensity: 42000.0,                // 降低主光强度，避免正面过亮
+    intensity: 75000.0,               // 更新为 settings.json 的 sunlightIntensity
     castShadows: true,                 // 启用阴影
-    direction: Vector3(0.193603, -0.213967, -0.957463), // settings.json 精确方向
+    direction: Vector3(0.366695, -0.357967, -0.858717), // 更新为 settings.json 的最新方向
   ));
 
   // 正面补光 - 增强正面填充
@@ -782,7 +782,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         if (kDebugMode) {
           debugPrint('📦 开始加载 Skybox...');
         }
-        await _thermionViewer!.loadSkybox("assets/environments/studio_env_skybox.ktx");
+        await _thermionViewer!.loadSkybox("assets/environments/studio_small_env_skybox.ktx");
         if (kDebugMode) {
           debugPrint('✅ Skybox 加载完成');
         }
@@ -808,9 +808,23 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         if (kDebugMode) {
           debugPrint('💡 开始加载 IBL...');
         }
-        await _thermionViewer!.loadIbl("assets/environments/studio_env_ibl.ktx", intensity: 32000.0);
+        await _thermionViewer!.loadIbl("assets/environments/studio_small_env_ibl.ktx", intensity: 15600.0);
         if (kDebugMode) {
-          debugPrint('✅ IBL 加载完成 (强度: 48000)');
+          debugPrint('✅ IBL 加载完成 (强度: 15600)');
+        }
+
+        // 应用 IBL 旋转（基于 settings.json 中的 iblRotation 参数）
+        try {
+          var rotationMatrix = Matrix3.identity();
+          Matrix4.rotationY(0.558505).copyRotation(rotationMatrix); // settings.json 中的角度
+          await _thermionViewer!.rotateIbl(rotationMatrix);
+          if (kDebugMode) {
+            debugPrint('🔄 IBL 旋转已应用: 0.558505 弧度');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            debugPrint('⚠️ IBL 旋转失败: $e');
+          }
         }
       } catch (e) {
         if (kDebugMode) {
@@ -838,14 +852,26 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       // 🎨 应用后处理效果（基于 settings.json）
       await _thermionViewer!.setPostProcessing(true);
 
+      // 🌑 启用阴影系统（基于 settings.json: enableShadows: true）
+      try {
+        await _thermionViewer!.setShadowsEnabled(true);
+        if (kDebugMode) {
+          debugPrint('🌑 阴影系统已启用');
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('⚠️ 阴影系统启用失败: $e');
+        }
+      }
+
       // Tone Mapping - ACES 是最接近 ACES_LEGACY 的选项
       await _thermionViewer!.setToneMapping(ToneMapper.ACES);
 
       // Bloom 效果
-      await _thermionViewer!.setBloom(true, 0.544);  // enabled, strength from new settings.json
+      await _thermionViewer!.setBloom(true, 0.348);  // enabled, strength from updated settings.json
 
       // 抗锯齿 (MSAA, FXAA, TAA)
-      await _thermionViewer!.setAntiAliasing(true, true, false);  // MSAA on, FXAA on, TAA off
+      await _thermionViewer!.setAntiAliasing(true, true, true);  // MSAA on, FXAA on, TAA on (从 settings.json)
 
       // 🔆 调整曝光度以提升整体亮度（基于 settings.json 的相机参数）
       // cameraAperture: 16, cameraSpeed: 125, cameraISO: 100
