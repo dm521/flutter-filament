@@ -1,0 +1,75 @@
+{
+  "view": {
+    "postProcessing": true,
+    "dithering": true,
+
+    "bloom": {
+      "enabled": true,
+      "strength": 0.648,
+      "thresholdEnabled": true,
+      "levels": 6,
+      "quality": 0
+    },
+
+    "taa": { "enabled": false },
+    "fxaa": { "enabled": true },
+
+    "msaa": { "samples": 4, "customResolve": false },
+
+    "ssao": { "enabled": true },
+
+    "ssr": {
+      "enabled": true,
+      "guardBand": true,
+      "rayThickness": 0.100,
+      "bias": 0.010,
+      "maxDistance": 3.000,
+      "stride": 2.000
+    },
+
+    "dynamicResolution": {
+      "enabled": false,
+      "homogeneous": false,
+      "minScale": 0.500,
+      "maxScale": 1.000,
+      "quality": 0,
+      "sharpness": 0.900
+    }
+  },
+
+  "lighting": {
+    "ibl": {
+      "intensity": 74800.000,
+      "rotation": 0.0
+    },
+    "sun": {
+      "enabled": true,
+      "intensity": 64800.000,
+      "halo": { "size": 10.000, "falloff": 80.000 },
+      "radius": 1.900,
+      "direction": [0.194, -0.214, -0.957],
+      "shadowFar": 0.000,
+      "shadows": {
+        "enabled": true,
+        "mapSize": 1024,
+        "stable": false,
+        "lispsm": true,
+        "type": "PCF",
+        "cascades": 1,
+        "splitPositions": [0.125, 0.250, 0.500],
+        "contactShadows": false,
+        "debugCascades": false
+      }
+    }
+  },
+
+  "camera": {
+    "mode": "FREE",
+    "focalLength": 80.528,
+    "aperture": 16.000,
+    "shutterSpeed": 125.000,
+    "iso": 100.000,
+    "near": 0.100,
+    "far": 100.000
+  }
+}

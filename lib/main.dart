@@ -3,9 +3,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide View;
 import 'package:flutter/scheduler.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
-import 'package:vector_math/vector_math_64.dart' hide Colors;
+// vector_math types are re-exported by thermion_flutter
 import 'lip_sync_controller.dart';
-import 'pages/scene_demo_page.dart';
+import 'camera_presets.dart';
 
 // 🎭 动画状态枚举
 enum AnimState { none, idle, talk }
@@ -17,82 +17,41 @@ void main() {
 //
 
 
+// 基于 format.json 的专业灯光配置
 Future<void> applyLightsFromSpec(ThermionViewer viewer) async {
-  try { await viewer.destroyLights(); } catch (_) {}
+  try {
+    await viewer.destroyLights();
+  } catch (_) {}
 
-  final Vector3 focus = Vector3(0.0, 1.10, 0.0);
-  Vector3 _dir(Vector3 pos) { final d = focus - pos; d.normalize(); return d; }
+  // 根据 format.json 配置主太阳光
+  // direction: [0.194, -0.214, -0.957] 表示光线从右上前方照射
+  await viewer.addDirectLight(DirectLight.sun(
+    color: 5800.0,                    // 中性色温
+    intensity: 64800.0,                // format.json 中的太阳光强度
+    castShadows: true,                 // 启用阴影
+    direction: Vector3(0.194, -0.214, -0.957), // 使用 format.json 的方向
+  ));
 
-  Future<void> _sun({
-    required double k, required double it, required Vector3 dir, bool shadow=false
-  }) async {
-    await viewer.addDirectLight(DirectLight.sun(
-      color: k, intensity: it, castShadows: shadow, direction: dir,
-    ));
-  }
+  // 添加补充光源（更柔和的效果）
+  // Fill light - 从正面略上方补光，减少阴影
+  await viewer.addDirectLight(DirectLight.sun(
+    color: 5600.0,                    // 稍暖的补光
+    intensity: 20000.0,               // 较弱的补光
+    castShadows: false,
+    direction: Vector3(0.0, -0.3, -1.0).normalized(),
+  ));
 
-  // 全局增益：整体还暗就 23000–24000；过亮就 20000
-  const double kScale = 22000.0;
+  // Rim light - 轮廓光，从后方照射
+  await viewer.addDirectLight(DirectLight.sun(
+    color: 6500.0,                    // 冷色轮廓光
+    intensity: 15000.0,               // 中等强度
+    castShadows: false,
+    direction: Vector3(-0.5, -0.2, 0.8).normalized(),
+  ));
 
-  // A) 顶部中性兜底（极弱，只抹死黑）
-  await _sun(k: 6500.0, it: 800.0, dir: Vector3(0.0, -1.0, -0.15));
-
-  // B) 主光（左前上 → 更“擦面”，强度降，开阴影；避免正怼脸）
-  final Vector3 keyPos = Vector3(-1.10, 1.45, 1.90);
-  await _sun(k: 6000.0, it: 1.95 * kScale, dir: _dir(keyPos), shadow: true);
-
-  // C) 顶部柔补（明显抬胸腹/眼下阴影）
-  final Vector3 fillTopPos = Vector3(0.0, 2.60, 1.00);
-  await _sun(k: 6000.0, it: 1.90 * kScale, dir: _dir(fillTopPos));
-
-  // D) 右前暖补（更靠前更贴脸，吃掉右脸/躯干硬阴影）
-  final Vector3 warmPos = Vector3(0.70, 1.10, 0.10);
-  await _sun(k: 5400.0, it: 2.10 * kScale, dir: _dir(warmPos));
-
-  // E) 左侧微补（小功率，只填左臂死黑）
-  final Vector3 leftFillPos = Vector3(-0.90, 1.10, 0.40);
-  await _sun(k: 5900.0, it: 0.55 * kScale, dir: _dir(leftFillPos));
-
-  // F) 冷轮廓（更轻，只勾发丝/肩线）
-  final Vector3 rimPos = Vector3(1.10, 1.90, -2.20);
-  await _sun(k: 8200.0, it: 0.45 * kScale, dir: _dir(rimPos));
-
-  // G) 反天光（偏暖、加量：腿/鞋不再死白，裙褶回细节）
-  final Vector3 bouncePos = Vector3(0.0, -1.05, 0.55);
-  await _sun(k: 5000.0, it: 1.30 * kScale, dir: _dir(bouncePos));
-
-  // H) 正面柔光（很弱，从镜头方向两盏，均匀抹面部阴影）
-  final Vector3 camSoft1 = Vector3(0.10, 1.30, 3.0);
-  final Vector3 camSoft2 = Vector3(-0.10, 1.30, 3.0);
-  await _sun(k: 5800.0, it: 0.45 * kScale, dir: _dir(camSoft1));
-  await _sun(k: 5800.0, it: 0.45 * kScale, dir: _dir(camSoft2));
-
-    // 1) 胸腹/上臂：正面柔填（很弱，尽量不碰脸）
-    final Vector3 torsoFillPos = Vector3(0.20, 1.20, 1.60);   // 镜头略下、正前方
-    await _sun(
-    k: 5600.0,                       // 略暖，让皮肤不灰
-    it: 0.90 * kScale,               // 小功率，只抬中段
-    dir: _dir(torsoFillPos),
-    // shadows: false  // 默认 false
-    );
-
-    // 2) 鞋/裙摆：地面反天光（比原先更暖更有量）
-    final Vector3 shoeBouncePos = Vector3(0.0, -0.40, 0.90);  // 脚前偏低位，向上托
-    await _sun(
-    k: 5000.0,                       // 偏暖，减少“病白”
-    it: 1.20 * kScale,               // 比你现有 bounce 稍强
-    dir: _dir(shoeBouncePos)
-    );
-
-    // 3) 裙褶 kicker：低右前侧光，提裙摆细节，不影响上半身
-    final Vector3 skirtKickerPos = Vector3(0.80, -0.20, 0.60);
-    await _sun(
-    k: 5200.0,                       // 微暖
-    it: 0.70 * kScale,               // 中等，小范围提折线
-    dir: _dir(skirtKickerPos)
-    );
-
-  try { await viewer.setRendering(true); } catch (_) {}
+  try {
+    await viewer.setRendering(true);
+  } catch (_) {}
 }
 
 
@@ -121,13 +80,13 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
-  late DelegateInputHandler _inputHandler;
+  DelegateInputHandler? _inputHandler;
   ThermionViewer? _thermionViewer;
 
   ThermionAsset? _asset;
   
   // 🎭 测试用的角色模型路径
-  final _characterUri = "assets/models/erciyuan_fix.glb";
+  final _characterUri = "assets/models/xiaomeng_ani_0918.glb";
 
   // 动画相关
   final gltfAnimations = <String>[];
@@ -139,6 +98,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   AnimState _currentState = AnimState.none;
   int _idleAnimIndex = -1;
   int _talkAnimIndex = -1;
+  // ignore: unused_field
   int _lastPlayingIndex = -1;
   Timer? _talkTimer;
   
@@ -154,10 +114,15 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   bool _showFpsOverlay = true;
   
   // 按钮按下状态
+  // ignore: unused_field
   bool _isMicPressed = false;
   
   // 🎤 口型同步控制器
   LipSyncController? _lipSyncController;
+  // 相机预设（默认胸像/全身默认）
+  // ignore: unused_field
+  CameraPreset _cameraPreset = CameraPreset.soloCloseUp;
+
   // 口型参数（UI）
   bool _lipSmooth = true;
   double _lipPhaseMs = 0.0; // -300..+300
@@ -793,22 +758,26 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
 
       
 
-      // 🎥 设置相机位置
-      final camera = await _thermionViewer!.getActiveCamera();
-      await camera.lookAt(Vector3(0, 1.0, 2.0));
+      // 🎥 设置相机视角（预设）
+      await applyCameraPreset(_thermionViewer!, preset: CameraPreset.soloCloseUp, characterCenter: null);
 
-      // 🌅 加载官方默认环境
-      await _thermionViewer!.loadSkybox("assets/default_env_skybox.ktx");
-      await _thermionViewer!.loadIbl("assets/default_env_ibl.ktx");
+      // 🌅 加载环境光照（基于 format.json 的配置）
+      await _thermionViewer!.loadSkybox("assets/environments/city_env_skybox.ktx");
+      await _thermionViewer!.loadIbl("assets/environments/city_env_ibl.ktx", intensity: 74800.0);
 
-      // 没有 setIblIntensity，就直接把 IBL 移除，仅留 skybox
-      //try { await _thermionViewer!.removeIbl(); } catch (_) {}
-
-      // 👉👉👉 新增：按三盏灯的规格添加（放在 IBL 之后、渲染之前）
+      // 💡 应用专业灯光配置
       await applyLightsFromSpec(_thermionViewer!);
-      
-      // 🎨 启用后处理和渲染
+
+      // 🎨 应用后处理效果（基于 format.json）
       await _thermionViewer!.setPostProcessing(true);
+
+      // Bloom 效果
+      await _thermionViewer!.setBloom(true, 0.648);  // enabled, strength from format.json
+
+      // 抗锯齿 (MSAA, FXAA, TAA)
+      await _thermionViewer!.setAntiAliasing(true, true, false);  // MSAA on, FXAA on, TAA off per format.json
+
+      // 启用渲染
       await _thermionViewer!.setRendering(true);
 
       // 🎮 设置轨道控制器
@@ -1121,16 +1090,16 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                           style: TextStyle(color: Colors.white, fontSize: 12),
                         ),
                         const SizedBox(width: 6),
-                        Switch(
-                          value: _lipSmooth,
-                          onChanged: (v) {
-                            setState(() {
-                              _lipSmooth = v;
-                            });
-                            _lipSyncController?.enableSmoothing = v;
-                          },
-                          activeColor: Colors.greenAccent,
-                        ),
+                          Switch(
+                            value: _lipSmooth,
+                            onChanged: (v) {
+                              setState(() {
+                                _lipSmooth = v;
+                              });
+                              _lipSyncController?.enableSmoothing = v;
+                            },
+                            activeThumbColor: Colors.greenAccent,
+                          ),
                         const SizedBox(width: 12),
                         Text(
                           _lipSmooth ? 'ON' : 'OFF',
@@ -1290,22 +1259,17 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     if (_thermionViewer == null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title),
-          actions: [
-            IconButton(
-              tooltip: '场景示例',
-              icon: const Icon(Icons.travel_explore),
-              onPressed: () async {
-                if (!mounted) return;
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SceneDemoPage()),
-                );
-              },
-            ),
-          ],
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            tooltip: '切换视角',
+            icon: const Icon(Icons.camera_outdoor),
+            onPressed: () {},
+          ),
+        ],
+      ),
         body: const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -1323,17 +1287,37 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          IconButton(
-            tooltip: '场景示例',
-            icon: const Icon(Icons.travel_explore),
-            onPressed: () async {
-              if (!mounted) return;
-              try { await _thermionViewer?.setRendering(false); } catch (_) {}
-              await Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SceneDemoPage()),
-              );
-              try { await _thermionViewer?.setRendering(true); } catch (_) {}
+          PopupMenuButton<CameraPreset>(
+            tooltip: '切换视角',
+            icon: const Icon(Icons.camera_outdoor),
+            onSelected: (preset) async {
+              setState(() => _cameraPreset = preset);
+              if (_thermionViewer != null) {
+                await applyCameraPreset(
+                  _thermionViewer!,
+                  preset: _cameraPreset,
+                  characterCenter: null,
+                );
+              }
             },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: CameraPreset.soloCloseUp,
+                child: Text('全身/默认'),
+              ),
+              const PopupMenuItem(
+                value: CameraPreset.halfBody,
+                child: Text('半身像'),
+              ),
+              const PopupMenuItem(
+                value: CameraPreset.bustCloseUp,
+                child: Text('胸像特写'),
+              ),
+              const PopupMenuItem(
+                value: CameraPreset.thirdPersonOts,
+                child: Text('第三人称越肩'),
+              ),
+            ],
           ),
         ],
       ),
@@ -1341,12 +1325,12 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         children: [
           // 3D 视图 - 全屏显示
           Positioned.fill(
-            child: ThermionListenerWidget(
-              inputHandler: _inputHandler,
-              child: ThermionWidget(
-                viewer: _thermionViewer!,
-              ),
-            ),
+            child: _inputHandler == null
+                ? ThermionWidget(viewer: _thermionViewer!)
+                : ThermionListenerWidget(
+                    inputHandler: _inputHandler!,
+                    child: ThermionWidget(viewer: _thermionViewer!),
+                  ),
           ),
           
           // FPS 显示（左上角）
@@ -1417,29 +1401,15 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 const SizedBox(height: 12),
                 
                 // 重新加载按钮
-                FloatingActionButton(
-                  heroTag: "reload",
-                  mini: true,
-                  onPressed: () => _loadCharacter(_characterUri),
-                  backgroundColor: Colors.blue.withValues(alpha: 0.9),
-                  child: const Icon(Icons.refresh, color: Colors.white, size: 20),
-                ),
-                const SizedBox(height: 12),
+                // FloatingActionButton(
+                //   heroTag: "reload",
+                //   mini: true,
+                //   onPressed: () => _loadCharacter(_characterUri),
+                //   backgroundColor: Colors.blue.withValues(alpha: 0.9),
+                //   child: const Icon(Icons.refresh, color: Colors.white, size: 20),
+                // ),
+                //const SizedBox(height: 12),
                 
-                // 测试 Morph Target 按钮
-                FloatingActionButton(
-                  heroTag: "test_morph",
-                  mini: true,
-                  onPressed: _testMorphTargets,
-                  backgroundColor: Colors.red.withValues(alpha: 0.9),
-                  child: const Icon(
-                    Icons.face,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                ),
-                
-                const SizedBox(height: 10),
                 
                 // 主控制面板按钮
                 FloatingActionButton(
@@ -1462,71 +1432,71 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           ),
           
           // 🎤 大播放按钮（中央底部）
-          Positioned(
-            bottom: 40,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: GestureDetector(
-                onTapDown: (_) {
-                  if (kDebugMode) {
-                    debugPrint('🎤 麦克风按钮按下');
-                  }
-                  setState(() {
-                    _isMicPressed = true;
-                  });
-                  // 按下时开始播放 talk
-                  if (_talkAnimIndex >= 0) {
-                    startTalkLoop();
-                  }
-                },
-                onTapUp: (_) {
-                  if (kDebugMode) {
-                    debugPrint('🎤 麦克风按钮松开');
-                  }
-                  setState(() {
-                    _isMicPressed = false;
-                  });
-                  // 松开时回到 idle
-                  startIdleLoop();
-                },
-                onTapCancel: () {
-                  if (kDebugMode) {
-                    debugPrint('🎤 麦克风按钮取消');
-                  }
-                  setState(() {
-                    _isMicPressed = false;
-                  });
-                  // 取消时也回到 idle
-                  startIdleLoop();
-                },
-                child: Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: _isMicPressed || _currentState == AnimState.talk 
-                        ? Colors.orange.withValues(alpha: 0.9)
-                        : Colors.blue.withValues(alpha: 0.9),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.3),
-                        blurRadius: 15,
-                        offset: const Offset(0, 5),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    _isMicPressed || _currentState == AnimState.talk 
-                        ? Icons.record_voice_over 
-                        : Icons.mic,
-                    color: Colors.white,
-                    size: 40,
-                  ),
-                ),
-              ),
-            ),
-          ),
+          // Positioned(
+          //   bottom: 40,
+          //   left: 0,
+          //   right: 0,
+          //   child: Center(
+          //     child: GestureDetector(
+          //       onTapDown: (_) {
+          //         if (kDebugMode) {
+          //           debugPrint('🎤 麦克风按钮按下');
+          //         }
+          //         setState(() {
+          //           _isMicPressed = true;
+          //         });
+          //         // 按下时开始播放 talk
+          //         if (_talkAnimIndex >= 0) {
+          //           startTalkLoop();
+          //         }
+          //       },
+          //       onTapUp: (_) {
+          //         if (kDebugMode) {
+          //           debugPrint('🎤 麦克风按钮松开');
+          //         }
+          //         setState(() {
+          //           _isMicPressed = false;
+          //         });
+          //         // 松开时回到 idle
+          //         startIdleLoop();
+          //       },
+          //       onTapCancel: () {
+          //         if (kDebugMode) {
+          //           debugPrint('🎤 麦克风按钮取消');
+          //         }
+          //         setState(() {
+          //           _isMicPressed = false;
+          //         });
+          //         // 取消时也回到 idle
+          //         startIdleLoop();
+          //       },
+          //       child: Container(
+          //         width: 80,
+          //         height: 80,
+          //         decoration: BoxDecoration(
+          //           color: _isMicPressed || _currentState == AnimState.talk 
+          //               ? Colors.orange.withValues(alpha: 0.9)
+          //               : Colors.blue.withValues(alpha: 0.9),
+          //           shape: BoxShape.circle,
+          //           boxShadow: [
+          //             BoxShadow(
+          //               color: Colors.black.withValues(alpha: 0.3),
+          //               blurRadius: 15,
+          //               offset: const Offset(0, 5),
+          //             ),
+          //           ],
+          //         ),
+          //         child: Icon(
+          //           _isMicPressed || _currentState == AnimState.talk 
+          //               ? Icons.record_voice_over 
+          //               : Icons.mic,
+          //           color: Colors.white,
+          //           size: 40,
+          //         ),
+          //       ),
+          //     ),
+          //   ),
+          //),
           
           // 状态指示器（右上角）
           if (_asset != null)
