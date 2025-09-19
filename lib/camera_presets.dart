@@ -32,8 +32,8 @@ CameraRigConfig _configFor(CameraPreset preset) {
     case CameraPreset.halfBody:
       return CameraRigConfig(
         fovDegrees: 40,
-        eyeOffset: Vector3(0.0, 0.8, 2.2),  // 调整高度和距离
-        centerOffset: Vector3(0.0, 0.7, 0.0),
+        eyeOffset: Vector3(0.0, 0.6, 0.5),  // 调整高度和距离
+        centerOffset: Vector3(0.0, 0.0, 0.0),
       );
     case CameraPreset.bustCloseUp:
       return CameraRigConfig(

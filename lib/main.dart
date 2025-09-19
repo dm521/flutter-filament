@@ -77,12 +77,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Thermion 角色动画测试',
+      title: 'Thermion 角色测试',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: '角色动画测试'),
+      home: const MyHomePage(title: '角色测试'),
     );
   }
 }
@@ -114,7 +114,6 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   AnimState _currentState = AnimState.none;
   int _idleAnimIndex = -1;
   int _talkAnimIndex = -1;
-  // ignore: unused_field
   int _lastPlayingIndex = -1;
   Timer? _talkTimer;
   
@@ -143,6 +142,31 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   bool _lipSmooth = true;
   double _lipPhaseMs = 0.0; // -300..+300
 
+  // 🎯 调整模型位置的辅助函数
+  Future<void> adjustModelPosition(ThermionAsset asset, {
+    double xOffset = 0.0,
+    double yOffset = 0.0,
+    double zOffset = 0.0,
+    double scale = 1.0,
+  }) async {
+    try {
+      // 创建变换矩阵
+      final transform = Matrix4.identity()
+        ..translate(xOffset, yOffset, zOffset)
+        ..scale(scale);
+
+      await asset.setTransform(transform);
+
+      if (kDebugMode) {
+        debugPrint('🔧 模型位置已调整: X=$xOffset, Y=$yOffset, Z=$zOffset, Scale=$scale');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 调整模型位置失败: $e');
+      }
+    }
+  }
+
   Future _loadCharacter(String? uri) async {
     if (_asset != null) {
       await _thermionViewer!.destroyAsset(_asset!);
@@ -161,15 +185,21 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         // 🎯 获取模型边界信息
         final bounds = await _asset!.getBoundingBox();
         final size = bounds.max - bounds.min;
+        final center = (bounds.max + bounds.min) / 2;
         if (kDebugMode) {
           debugPrint('📏 模型尺寸: ${size.x.toStringAsFixed(2)} x ${size.y.toStringAsFixed(2)} x ${size.z.toStringAsFixed(2)}');
+          debugPrint('📍 模型中心: ${center.x.toStringAsFixed(2)}, ${center.y.toStringAsFixed(2)}, ${center.z.toStringAsFixed(2)}');
         }
-        
+
         // 🎯 应用单位立方体变换（官方推荐）
         await _asset!.transformToUnitCube();
         if (kDebugMode) {
           debugPrint('✅ 已应用 transformToUnitCube');
         }
+
+        // 🎯 额外的模型位置调整（可选）
+        // 如果需要微调模型位置，取消下面的注释
+        //await adjustModelPosition(_asset!, yOffset: -0.1); // 向下移动0.1单位
         
         // 🎭 获取动画数据
         final animations = await _asset!.getGltfAnimationNames();
