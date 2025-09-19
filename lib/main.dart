@@ -102,7 +102,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   ThermionAsset? _asset;
   
   // 🎭 测试用的角色模型路径
-  final _characterUri = "assets/models/xiaomeng_ani_0918_2.glb";
+  final _characterUri = "assets/models/xiaomeng_0919_2.glb";
 
   // 动画相关
   final gltfAnimations = <String>[];
@@ -114,6 +114,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   AnimState _currentState = AnimState.none;
   int _idleAnimIndex = -1;
   int _talkAnimIndex = -1;
+  // ignore: unused_field
   int _lastPlayingIndex = -1;
   Timer? _talkTimer;
   
@@ -130,7 +131,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   
   // 按钮按下状态
   // ignore: unused_field
-  bool _isMicPressed = false;
+  final bool _isMicPressed = false;
   
   // 🎤 口型同步控制器
   LipSyncController? _lipSyncController;
@@ -152,8 +153,8 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     try {
       // 创建变换矩阵
       final transform = Matrix4.identity()
-        ..translate(xOffset, yOffset, zOffset)
-        ..scale(scale);
+        ..translateByVector3(Vector3(xOffset, yOffset, zOffset))
+        ..scaleByVector3(Vector3(scale, scale, scale));
 
       await asset.setTransform(transform);
 
@@ -495,7 +496,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     
     try {
       if (kDebugMode) {
-        debugPrint('🎭 开始 Talk 循环... (从 ${_currentState} 状态)');
+        debugPrint('🎭 开始 Talk 循环... (从 $_currentState 状态)');
       }
       
       // 取消之前的定时器
@@ -614,8 +615,8 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       
       await _lipSyncController!.playLipSync(
         audioPath: 'wav/output.wav',
-        frameRate: 60.0,
-        attenuation: 0.8, // 降低幅度，使用更接近“默认数据”的嘴型
+        frameRate: 30.0,  // 改为30fps，与数据匹配（1775帧/59.16秒≈30fps）
+        attenuation: 1.0, // 改为1.0，不再降低幅度
         // 更强：播放前停止所有动画，结束后恢复 Idle 循环
         pauseIdleAnimation: () async {
           await _stopAllAnimations();
@@ -640,7 +641,51 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     }
   }
 
+  // 🔍 调试所有morph实体
+  Future<void> _debugAllMorphEntities() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.debugAllMorphEntities();
+    }
+  }
+
+  // 🔄 切换到指定实体
+  Future<void> _switchToEntity(int entityIndex) async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.switchToEntity(entityIndex);
+    }
+  }
+
+  // 🎯 测试当前实体的jawOpen
+  Future<void> _testCurrentEntityJawOpen() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.testCurrentEntityJawOpen();
+    }
+  }
+
+  // 🔬 深度调试实体1
+  Future<void> _deepDebugEntity1() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.deepDebugEntity1();
+    }
+  }
+
+  // 🔍 对比blendshape映射
+  Future<void> _compareBlendshapeMapping() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.compareBlendshapeMapping();
+    }
+  }
+
+  // 🔥 强制测试jawOpen
+  Future<void> _forceTestJawOpen() async {
+    if (_lipSyncController != null) {
+      await _lipSyncController!.forceTestJawOpen();
+    }
+  }
+
+
   // 🧪 测试 Morph Targets
+  // ignore: unused_element
   Future<void> _testMorphTargets() async {
     if (_asset == null) {
       if (kDebugMode) {
@@ -802,10 +847,8 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       
       _thermionViewer = await ThermionFlutterPlugin.createViewer();
 
-      
-
-      // 🎥 设置相机视角（预设）
-      await applyCameraPreset(_thermionViewer!, preset: CameraPreset.soloCloseUp, characterCenter: null);
+      // 启用渲染（必须在所有其他设置之前）
+      await _thermionViewer!.setRendering(true);
 
       // 🌅 加载环境光照（基于新 settings.json 的配置）
       try {
@@ -917,16 +960,24 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         }
       }
 
-      // 启用渲染
-      await _thermionViewer!.setRendering(true);
-
       // 🎮 设置轨道控制器
       _inputHandler = DelegateInputHandler.fixedOrbit(_thermionViewer!);
-      
+
       // 🎭 自动加载角色
       await _loadCharacter(_characterUri);
 
-
+      // 🎥 设置相机视角（在所有资源加载完成后）
+      try {
+        await applyCameraPreset(
+          _thermionViewer!,
+          preset: CameraPreset.soloCloseUp,
+          characterCenter: null,
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('⚠️ 初始相机设置失败，将使用默认设置: $e');
+        }
+      }
 
       setState(() {});
       if (kDebugMode) {
@@ -937,11 +988,62 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    _animationController.dispose();
-    _fpsTimer?.cancel();
-    _talkTimer?.cancel(); // 清理说话定时器
-    _lipSyncController?.dispose(); // 清理口型同步控制器
+    // 按正确顺序清理资源
+    _cleanupResources();
     super.dispose();
+  }
+
+  Future<void> _cleanupResources() async {
+    try {
+      // 1. 停止所有定时器
+      _fpsTimer?.cancel();
+      _talkTimer?.cancel();
+
+      // 2. 停止口型同步
+      if (_lipSyncController != null) {
+        await _lipSyncController!.stopLipSync();
+        _lipSyncController?.dispose();
+      }
+
+      // 3. 停止动画
+      if (_asset != null) {
+        try {
+          await _stopAllAnimations();
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ 停止动画失败: $e');
+        }
+      }
+
+      // 4. 暂停渲染
+      if (_thermionViewer != null) {
+        try {
+          await _thermionViewer!.setRendering(false);
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ 暂停渲染失败: $e');
+        }
+      }
+
+      // 5. 销毁资产
+      if (_asset != null && _thermionViewer != null) {
+        try {
+          await _thermionViewer!.destroyAsset(_asset!);
+          _asset = null;
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ 销毁资产失败: $e');
+        }
+      }
+
+      // 6. 清理 UI 控制器
+      _animationController.dispose();
+
+      if (kDebugMode) {
+        debugPrint('✅ 资源清理完成');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 资源清理失败: $e');
+      }
+    }
   }
 
   void _startFpsMonitoring() {
@@ -1282,17 +1384,28 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                           color: Colors.green,
                           onPressed: () => _playLipSync(),
                         ),
-                        
+
+
                         _buildControlButton(
                           icon: Icons.stop_circle,
                           label: '停止同步',
                           color: Colors.red,
                           onPressed: () => _stopLipSync(),
                         ),
+
+                        _buildControlButton(
+                          icon: Icons.local_fire_department,
+                          label: '强制测试',
+                          color: Colors.red,
+                          onPressed: () => _forceTestJawOpen(),
+                        ),
+        
                       ],
                     ),
-                    
-                    const SizedBox(height: 16),
+
+                    const SizedBox(height: 8),
+
+  
                     
                     // 状态指示
                     Container(
@@ -1443,20 +1556,20 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
             itemBuilder: (ctx) => [
               const PopupMenuItem(
                 value: CameraPreset.soloCloseUp,
-                child: Text('全身/默认'),
+                child: Text('全身视角'),
               ),
               const PopupMenuItem(
                 value: CameraPreset.halfBody,
-                child: Text('半身像'),
+                child: Text('半身视角'),
               ),
               const PopupMenuItem(
                 value: CameraPreset.bustCloseUp,
-                child: Text('胸像特写'),
+                child: Text('脸部特写'),
               ),
-              const PopupMenuItem(
-                value: CameraPreset.thirdPersonOts,
-                child: Text('第三人称越肩'),
-              ),
+              // const PopupMenuItem(
+              //   value: CameraPreset.thirdPersonOts,
+              //   child: Text('越肩视角'),
+              // ),
             ],
           ),
         ],
@@ -1539,18 +1652,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                   ),
                 ),
                 const SizedBox(height: 12),
-                
-                // 重新加载按钮
-                // FloatingActionButton(
-                //   heroTag: "reload",
-                //   mini: true,
-                //   onPressed: () => _loadCharacter(_characterUri),
-                //   backgroundColor: Colors.blue.withValues(alpha: 0.9),
-                //   child: const Icon(Icons.refresh, color: Colors.white, size: 20),
-                // ),
-                //const SizedBox(height: 12),
-                
-                
+          
                 // 主控制面板按钮
                 FloatingActionButton(
                   heroTag: "control",
@@ -1570,106 +1672,6 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
               ],
             ),
           ),
-          
-          // 🎤 大播放按钮（中央底部）
-          // Positioned(
-          //   bottom: 40,
-          //   left: 0,
-          //   right: 0,
-          //   child: Center(
-          //     child: GestureDetector(
-          //       onTapDown: (_) {
-          //         if (kDebugMode) {
-          //           debugPrint('🎤 麦克风按钮按下');
-          //         }
-          //         setState(() {
-          //           _isMicPressed = true;
-          //         });
-          //         // 按下时开始播放 talk
-          //         if (_talkAnimIndex >= 0) {
-          //           startTalkLoop();
-          //         }
-          //       },
-          //       onTapUp: (_) {
-          //         if (kDebugMode) {
-          //           debugPrint('🎤 麦克风按钮松开');
-          //         }
-          //         setState(() {
-          //           _isMicPressed = false;
-          //         });
-          //         // 松开时回到 idle
-          //         startIdleLoop();
-          //       },
-          //       onTapCancel: () {
-          //         if (kDebugMode) {
-          //           debugPrint('🎤 麦克风按钮取消');
-          //         }
-          //         setState(() {
-          //           _isMicPressed = false;
-          //         });
-          //         // 取消时也回到 idle
-          //         startIdleLoop();
-          //       },
-          //       child: Container(
-          //         width: 80,
-          //         height: 80,
-          //         decoration: BoxDecoration(
-          //           color: _isMicPressed || _currentState == AnimState.talk 
-          //               ? Colors.orange.withValues(alpha: 0.9)
-          //               : Colors.blue.withValues(alpha: 0.9),
-          //           shape: BoxShape.circle,
-          //           boxShadow: [
-          //             BoxShadow(
-          //               color: Colors.black.withValues(alpha: 0.3),
-          //               blurRadius: 15,
-          //               offset: const Offset(0, 5),
-          //             ),
-          //           ],
-          //         ),
-          //         child: Icon(
-          //           _isMicPressed || _currentState == AnimState.talk 
-          //               ? Icons.record_voice_over 
-          //               : Icons.mic,
-          //           color: Colors.white,
-          //           size: 40,
-          //         ),
-          //       ),
-          //     ),
-          //   ),
-          //),
-          
-          // 状态指示器（右上角）
-          if (_asset != null)
-            Positioned(
-              top: 50,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: _getStateColor().withValues(alpha: 0.9),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      _getStateIcon(),
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _getStateText(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
         ],
       ),
     );
