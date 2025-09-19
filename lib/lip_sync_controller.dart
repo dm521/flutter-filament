@@ -506,18 +506,15 @@ class LipSyncController {
         }
       }
 
-      // 🔥 关键修复：应用权重到选中的主要实体（现在应该是实体12）
-      await asset.setMorphTargetWeights(entity, scaledWeights);
+      // 🔥 关键修复：同步应用实体12和实体13的权重，确保组合效果
+      List<Future<void>> syncTasks = [];
 
-      if (kDebugMode && _frameCounter % 50 == 1) {
-        debugPrint('🎭 主要面部权重已应用到实体$_morphTargetEntityIndex');
-      }
+      // 任务1：应用实体12的主要面部权重
+      syncTasks.add(asset.setMorphTargetWeights(entity, scaledWeights));
 
-      // 🔥 关键修复：将bs.json的jawOpen数据赋给实体13的Mouth_Mod
+      // 任务2：准备并应用实体13的jawOpen权重
       try {
         final childEntities = await asset.getChildEntities();
-
-        // 直接检查实体13
         if (childEntities.length > 13) {
           final entity13 = childEntities[13];
           final morphTargets13 = await asset.getMorphTargetNames(entity: entity13);
@@ -529,10 +526,9 @@ class LipSyncController {
           if (morphTargets13.isNotEmpty) {
             final weights13 = List.filled(morphTargets13.length, 0.0);
 
-            // 直接将jawOpen数据赋给实体13的第一个target（应该是Mouth_Mod）
             if (actualWeights.length > 17) {
               final jawOpenValue = actualWeights[17]; // bs.json的jawOpen数据
-              final jawAmplifier = 5.0; // 🔥 jaw专用放大倍率，从2.5增加到5.0
+              final jawAmplifier = 5.0; // 🔥 jaw专用放大倍率
               weights13[0] = (jawOpenValue * (multiplier ?? weightMultiplier) * jawAmplifier).clamp(0.0, 1.0);
 
               if (kDebugMode && _frameCounter % 50 == 1) {
@@ -540,14 +536,21 @@ class LipSyncController {
               }
             }
 
-            await asset.setMorphTargetWeights(entity13, weights13);
+            // 添加实体13的权重应用任务
+            syncTasks.add(asset.setMorphTargetWeights(entity13, weights13));
           }
         }
       } catch (e) {
-        // 实体13应用失败不影响主流程
         if (kDebugMode && _frameCounter % 100 == 1) {
-          debugPrint('⚠️ 实体13权重应用失败: $e');
+          debugPrint('⚠️ 实体13权重准备失败: $e');
         }
+      }
+
+      // 🔥 关键：同步执行所有权重应用，确保实体12和13在同一帧生效
+      await Future.wait(syncTasks);
+
+      if (kDebugMode && _frameCounter % 50 == 1) {
+        debugPrint('🎭 实体12+13权重已同步应用到帧$_frameCounter');
       }
       
       // 第一帧显示缩放后的权重
