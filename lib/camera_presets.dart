@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
 
@@ -70,7 +69,13 @@ Future<void> applyCameraPreset(
 
   try {
     // 暂停渲染以避免并发问题
-    await viewer.setRendering(false);
+    try {
+      await viewer.setRendering(false);
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('⚠️ 暂停渲染失败，继续尝试: $e');
+      }
+    }
 
     // 获取相机（在暂停渲染后）
     final cam = await viewer.getActiveCamera();
