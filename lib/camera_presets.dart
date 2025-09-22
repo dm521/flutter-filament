@@ -4,8 +4,8 @@ import 'package:thermion_flutter/thermion_flutter.dart';
 enum CameraPreset {
   soloCloseUp,   // 单人演播（当前较远，接近全身）
   halfBody,      // 半身像（腰部以上）
-  bustCloseUp,   // 胸像/肩部以上特写
-  thirdPersonOts // 越肩第三人称
+  bustCloseUp   // 胸像/肩部以上特写
+  //thirdPersonOts // 越肩第三人称
 }
 
 class CameraRigConfig {
@@ -44,12 +44,12 @@ CameraRigConfig _configFor(CameraPreset preset) {
         position: Vector3(0.0, 0.75, 0.8), // 特写距离
         target: Vector3(0.0, 0.7, 0.0),   // 看向肩部/颈部
       );
-    case CameraPreset.thirdPersonOts:
-      // 越肩第三人称视角
-      return CameraRigConfig(
-        position: Vector3(-1.8, 0.6, -2.5), // 左后方位置
-        target: Vector3(0.3, 0.4, 1.5),     // 看向角色前方
-      );
+    // case CameraPreset.thirdPersonOts:
+    //   // 越肩第三人称视角
+    //   return CameraRigConfig(
+    //     position: Vector3(-1.8, 0.6, -2.5), // 左后方位置
+    //     target: Vector3(0.3, 0.4, 1.5),     // 看向角色前方
+    //   );
   }
 }
 
