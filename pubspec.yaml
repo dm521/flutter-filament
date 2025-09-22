@@ -38,6 +38,7 @@ dependencies:
   thermion_dart: ^0.3.3
   vector_math: ^2.1.4
   audioplayers: ^6.0.0
+  animation_tools_dart: ^0.1.0
 
 dev_dependencies:
   flutter_test:
