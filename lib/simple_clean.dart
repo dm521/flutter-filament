@@ -55,10 +55,13 @@ class SimpleThermionTest extends StatefulWidget {
   State<SimpleThermionTest> createState() => _SimpleThermionTestState();
 }
 
-class _SimpleThermionTestState extends State<SimpleThermionTest> {
+class _SimpleThermionTestState extends State<SimpleThermionTest>
+    with WidgetsBindingObserver {
   ThermionViewer? _viewer;
   String _status = '初始化中...';
   DelegateInputHandler? _inputHandler;
+  bool _isInitialized = false;
+  bool _isDisposed = false;
 
   // 动画相关
   ThermionAsset? _asset;
@@ -85,7 +88,47 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeSimpleViewer();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+
+    if (_viewer == null || _isDisposed) return;
+
+    switch (state) {
+      case AppLifecycleState.paused:
+        // 应用进入后台，暂停渲染
+        if (kDebugMode) debugPrint('🔄 应用进入后台，暂停渲染');
+        _viewer?.setRendering(false);
+        break;
+      case AppLifecycleState.resumed:
+        // 应用回到前台，恢复渲染
+        if (kDebugMode) debugPrint('🔄 应用回到前台，恢复渲染');
+        _resumeRendering();
+        break;
+      default:
+        break;
+    }
+  }
+
+  Future<void> _resumeRendering() async {
+    if (_viewer == null || _isDisposed) return;
+
+    try {
+      // 延迟一下确保 Surface 准备好
+      await Future.delayed(const Duration(milliseconds: 100));
+      await _viewer!.setRendering(true);
+
+      // 如果有 idle 动画，重新启动
+      if (_isInitialized && _idleAnimationIndex != -1 && !_isLipSyncPlaying) {
+        await _resumeIdleAnimation();
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ 恢复渲染失败: $e');
+    }
   }
 
   Future<void> _initializeSimpleViewer() async {
@@ -98,7 +141,25 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
       await Future.delayed(const Duration(milliseconds: 300));
 
       setState(() => _status = '启用渲染...');
-      await _viewer!.setRendering(true);
+
+      // 多次尝试启用渲染，处理 Surface 初始化问题
+      bool renderingEnabled = false;
+      for (int attempt = 0; attempt < 3; attempt++) {
+        try {
+          await _viewer!.setRendering(true);
+          renderingEnabled = true;
+          break;
+        } catch (e) {
+          if (kDebugMode) debugPrint('渲染启用尝试 ${attempt + 1} 失败: $e');
+          if (attempt < 2) {
+            await Future.delayed(Duration(milliseconds: 200 * (attempt + 1)));
+          }
+        }
+      }
+
+      if (!renderingEnabled) {
+        throw Exception('无法启用渲染，Surface 可能未准备好');
+      }
 
       setState(() => _status = '加载 Skybox...');
 
@@ -143,7 +204,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
       // 通过色温近似: ~5400K (暖白)
       await _viewer!.addDirectLight(
         DirectLight.sun(
-          color: 5400.0, // 暖白色温
+          color: 6400.0, // 暖白色温
           intensity: 75000.0, // 更新为 settings.json 的 sunlightIntensity
           castShadows: true, // 启用阴影
           direction: Vector3(
@@ -293,7 +354,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
         await _loadBlendshapeData();
 
         // 🎭 自动播放idle动画
-        await _startIdleAnimation();
+        // await _startIdleAnimation();
+
+        _isInitialized = true;
       } catch (e) {
         setState(() => _status = '⚠️ 模型加载失败: $e');
         if (kDebugMode) debugPrint('模型加载失败: $e');
@@ -457,7 +520,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
         debugPrint('📊 开始加载 blendshape 数据...');
       }
 
-      final jsonString = await rootBundle.loadString('assets/wav/bs.json');
+      final jsonString = await rootBundle.loadString('assets/wav/bs_7.json');
       final List<dynamic> rawData = json.decode(jsonString);
 
       _blendshapeData = rawData
@@ -550,7 +613,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
       _isPlaying = true;
       _currentAnimationIndex = _idleAnimationIndex;
 
-      setState(() => _status = '✅ 角色已就绪，idle动画播放中');
+      setState(() => _status = '✅ 口型同步系统准备就绪');
 
       if (kDebugMode) {
         debugPrint('✅ Idle动画播放成功');
@@ -838,14 +901,24 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('口型同步测试')),
+      appBar: AppBar(title: const Text('写实数字人测试')),
       body: Column(
         children: [
           // 扩大 3D 视图区域
           Expanded(
             flex: 4, // 占据更多空间
-            child: _viewer != null
-                ? ThermionWidget(viewer: _viewer!)
+            child: _viewer != null && !_isDisposed
+                ? Container(
+                    // 添加容器来更好地控制 Surface
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: ThermionWidget(viewer: _viewer!),
+                    ),
+                  )
                 : const Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -980,12 +1053,39 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
 
   @override
   void dispose() {
+    _isDisposed = true;
+    WidgetsBinding.instance.removeObserver(this);
+
     // 清理音频资源
     _positionSubscription?.cancel();
     _completeSubscription?.cancel();
     _audioPlayer.dispose();
 
-    _viewer?.setRendering(false);
+    // 安全地清理 Viewer
+    _cleanupViewer();
+
     super.dispose();
+  }
+
+  Future<void> _cleanupViewer() async {
+    if (_viewer != null) {
+      try {
+        // 停止所有动画
+        if (_asset != null) {
+          for (int i = 0; i < _animations.length; i++) {
+            try {
+              await _asset!.stopGltfAnimation(i);
+            } catch (_) {}
+          }
+        }
+
+        // 停止渲染
+        await _viewer!.setRendering(false);
+
+        if (kDebugMode) debugPrint('✅ Viewer 清理完成');
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Viewer 清理时出错: $e');
+      }
+    }
   }
 }
