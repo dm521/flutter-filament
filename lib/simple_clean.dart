@@ -85,6 +85,11 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
   StreamSubscription<void>? _completeSubscription;
   int _lastAppliedFrame = -1;
 
+  // 权重优化参数
+  static const double _weightAmplifier = 1.0; // 恢复原始权重，不放大
+  List<double>? _previousWeights; // 用于平滑处理
+  static const double _smoothingFactor = 0.3; // 平滑系数 (0-1)
+
   @override
   void initState() {
     super.initState();
@@ -369,144 +374,115 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
-  // 检测所有实体的 morph targets
+  // 直接获取实体12的 morph targets
   Future<void> _detectMorphEntities() async {
     if (_asset == null) return;
 
     try {
-      setState(() => _status = '检测 Morph Targets...');
+      setState(() => _status = '获取实体12的 Morph Targets...');
 
       final childEntities = await _asset!.getChildEntities();
       _entities.clear();
 
       if (kDebugMode) {
-        debugPrint('🔍 开始检测 ${childEntities.length} 个实体的 morph targets...');
+        debugPrint('🎯 直接获取实体12的 morph targets...');
       }
 
-      // 嘴部相关关键词，用于评分
-      const mouthKeywords = [
-        'mouth',
-        'jaw',
-        'lip',
-        'viseme',
-        'aa',
-        'ih',
-        'ou',
-        'bs.',
-        'blendshape',
-      ];
-
-      for (int i = 0; i < childEntities.length; i++) {
-        try {
-          final entity = childEntities[i];
-          final morphTargets = await _asset!.getMorphTargetNames(
-            entity: entity,
-          );
-
-          if (morphTargets.isNotEmpty) {
-            // 计算实体评分（优先选择包含嘴部关键词的实体）
-            int score = morphTargets.fold<int>(0, (acc, name) {
-              final lowerName = name.toLowerCase();
-              int nameScore = 1; // 基础分
-
-              // 嘴部关键词加分
-              for (final keyword in mouthKeywords) {
-                if (lowerName.contains(keyword)) {
-                  nameScore += 3; // 嘴部相关加3分
-                  break;
-                }
-              }
-
-              return acc + nameScore;
-            });
-
-            // 特殊处理：52个targets的实体（标准ARKit数量）
-            if (morphTargets.length == 52) {
-              score += 100; // 给52个targets的实体极高优先级
-            }
-
-            // 特殊处理：实体12或13（根据main.dart的经验）
-            if (i == 12 || i == 13) {
-              score += 50; // 给实体12和13额外加分
-            }
-
-            final entityInfo = EntityInfo(
-              index: i,
-              entityHandle: entity,
-              morphTargets: morphTargets,
-              score: score,
-            );
-
-            _entities.add(entityInfo);
-
-            if (kDebugMode) {
-              debugPrint(
-                '✅ 实体 $i: ${morphTargets.length} targets, score=$score',
-              );
-
-              // 显示前5个 morph target 名称
-              final preview = morphTargets.take(5).join(', ');
-              debugPrint(
-                '   预览: $preview${morphTargets.length > 5 ? '...' : ''}',
-              );
-
-              // 检查是否包含关键的 jawOpen
-              final hasJawOpen = morphTargets.any(
-                (name) =>
-                    name.toLowerCase().contains('jawopen') ||
-                    name.toLowerCase().contains('jaw_open'),
-              );
-              if (hasJawOpen) {
-                debugPrint('   🦷 包含 jawOpen 相关 target');
-              }
-            }
-          }
-        } catch (e) {
-          if (kDebugMode) {
-            debugPrint('❌ 实体 $i 检测失败: $e');
-          }
-        }
+      // 确保实体12存在
+      if (childEntities.length <= 12) {
+        throw Exception('实体12不存在，总实体数: ${childEntities.length}');
       }
 
-      // 按评分排序，选择最佳实体
-      _entities.sort((a, b) => b.score.compareTo(a.score));
+      // 直接获取实体12
+      final entity12 = childEntities[12];
+      final morphTargets = await _asset!.getMorphTargetNames(entity: entity12);
 
-      if (_entities.isNotEmpty) {
-        // 优先选择实体12（真正的工作实体）
-        int preferredIndex = -1;
-        for (int i = 0; i < _entities.length; i++) {
-          if (_entities[i].index == 12) {
-            preferredIndex = i;
-            break;
-          }
-        }
-        _selectedMorphEntityIndex = preferredIndex >= 0 ? preferredIndex : 0;
-
-        if (kDebugMode) {
-          debugPrint('🎯 实体检测完成，找到 ${_entities.length} 个有效实体:');
-          for (int i = 0; i < _entities.length && i < 5; i++) {
-            final entity = _entities[i];
-            debugPrint('   ${i + 1}. ${entity.toString()}');
-          }
-          debugPrint(
-            '🏆 选择实体 ${_entities[_selectedMorphEntityIndex!].index} 作为主要口型实体',
-          );
-        }
-
-        setState(
-          () => _status =
-              '✅ 检测到 ${_entities.length} 个实体，已选择实体 ${_entities[_selectedMorphEntityIndex!].index}',
-        );
-      } else {
-        setState(() => _status = '⚠️ 未找到包含 morph targets 的实体');
-        if (kDebugMode) {
-          debugPrint('⚠️ 所有实体都没有 morph targets');
-        }
+      if (morphTargets.isEmpty) {
+        throw Exception('实体12没有 morph targets');
       }
-    } catch (e) {
-      setState(() => _status = '❌ 实体检测失败: $e');
+
+      // 创建实体12信息
+      final entity12Info = EntityInfo(
+        index: 12,
+        entityHandle: entity12,
+        morphTargets: morphTargets,
+        score: 1000, // 固定高分
+      );
+
+      _entities.add(entity12Info);
+      _selectedMorphEntityIndex = 0; // 直接选择第一个（也是唯一一个）
+
       if (kDebugMode) {
-        debugPrint('❌ 检测 morph targets 失败: $e');
+        debugPrint('✅ 实体12: ${morphTargets.length} targets');
+
+        // 🔍 打印实体12的完整morph target列表
+        // debugPrint('📋 实体12完整morph target列表:');
+        // for (int i = 0; i < morphTargets.length; i++) {
+        //   debugPrint('   [$i] ${morphTargets[i]}');
+        // }
+
+        // 🆚 ARKit标准顺序对比
+        // const arkitStandard = [
+        //   "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft", "eyeLookUpLeft",
+        //   "eyeSquintLeft", "eyeWideLeft", "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight",
+        //   "eyeLookOutRight", "eyeLookUpRight", "eyeSquintRight", "eyeWideRight", "jawForward",
+        //   "jawLeft", "jawRight", "jawOpen", "mouthClose", "mouthFunnel",
+        //   "mouthPucker", "mouthLeft", "mouthRight", "mouthSmileLeft", "mouthSmileRight",
+        //   "mouthFrownLeft", "mouthFrownRight", "mouthDimpleLeft", "mouthDimpleRight", "mouthStretchLeft",
+        //   "mouthStretchRight", "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
+        //   "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight", "mouthUpperUpLeft",
+        //   "mouthUpperUpRight", "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft",
+        //   "browOuterUpRight", "cheekPuff", "cheekSquintLeft", "cheekSquintRight", "noseSneerLeft",
+        //   "noseSneerRight", "tongueOut"
+        // ];
+
+        // debugPrint('🆚 与ARKit标准顺序对比:');
+        // bool orderMatches = true;
+        // for (int i = 0; i < morphTargets.length && i < arkitStandard.length; i++) {
+        //   final entity12Name = morphTargets[i].replaceFirst('F.', ''); // 移除F.前缀
+        //   final arkitName = arkitStandard[i];
+        //   final matches = entity12Name.toLowerCase() == arkitName.toLowerCase();
+
+        //   if (!matches) {
+        //     orderMatches = false;
+        //     debugPrint('   ❌ [$i] ${morphTargets[i]} ≠ $arkitName');
+        //   } else {
+        //     debugPrint('   ✅ [$i] ${morphTargets[i]} = $arkitName');
+        //   }
+        // }
+
+        // if (orderMatches) {
+        //   debugPrint('🎉 实体12的morph target顺序与ARKit标准完全匹配！');
+        // } else {
+        //   debugPrint('⚠️ 实体12的morph target顺序与ARKit标准不匹配，需要重新映射');
+        // }
+
+        // 检查是否包含关键的 jawOpen
+        final jawOpenTarget = morphTargets.firstWhere(
+          (name) => name.toLowerCase().contains('jawopen'),
+          orElse: () => '',
+        );
+        if (jawOpenTarget.isNotEmpty) {
+          final jawOpenIndex = morphTargets.indexOf(jawOpenTarget);
+          debugPrint(
+            '   🦷 找到 jawOpen target: $jawOpenTarget (索引: $jawOpenIndex)',
+          );
+          debugPrint('   🆚 ARKit标准中jawOpen索引: 17');
+          if (jawOpenIndex == 17) {
+            debugPrint('   ✅ jawOpen位置匹配ARKit标准');
+          } else {
+            debugPrint('   ❌ jawOpen位置不匹配，需要重新映射');
+          }
+        }
+
+        debugPrint('🏆 直接使用实体12作为口型驱动实体');
+      }
+
+      setState(() => _status = '✅ 实体12准备就绪，${morphTargets.length}个targets');
+    } catch (e) {
+      setState(() => _status = '❌ 获取实体12失败: $e');
+      if (kDebugMode) {
+        debugPrint('❌ 获取实体12 morph targets 失败: $e');
       }
     }
   }
@@ -678,6 +654,8 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         debugPrint('   使用实体: ${selectedEntity.index}');
         debugPrint('   总帧数: ${_blendshapeData!.length}');
         debugPrint('   音频文件: wav/output.wav');
+        debugPrint('   🔧 权重处理: 原始权重 (${_weightAmplifier}x)');
+        debugPrint('   🌊 平滑系数: $_smoothingFactor');
       }
 
       // 停止所有动画，避免冲突（包括idle动画）
@@ -691,8 +669,11 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       // 重置所有权重
       await _resetAllMorphWeights();
 
-      // 🔥 关键修复：在播放开始时就彻底禁用实体13
-      await _permanentlyDisableEntity13();
+      // 🔄 重置平滑处理状态
+      _previousWeights = null;
+
+      // 🔥 关键修复：禁用可能冲突的实体13
+      await _disableEntity13();
 
       setState(() {}); // 更新 UI 状态
 
@@ -726,12 +707,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
           _lastAppliedFrame = clampedFrame;
           await _applyBlendshapeFrame(clampedFrame);
 
-          // 每100帧打印一次进度
-          if (clampedFrame % 100 == 0 && kDebugMode) {
-            debugPrint(
-              '🎬 播放进度: $clampedFrame/${_blendshapeData!.length} (${(clampedFrame / _blendshapeData!.length * 100).toStringAsFixed(1)}%)',
-            );
-          }
+          // 移除进度日志，减少日志输出
         }
       });
 
@@ -780,7 +756,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
-  // 应用单帧 blendshape 数据 - 性能优化版本
+  // 应用单帧 blendshape 数据 - 优化版本（权重放大+平滑）
   Future<void> _applyBlendshapeFrame(int frameIndex) async {
     if (_blendshapeData == null ||
         _selectedMorphEntityIndex == null ||
@@ -791,109 +767,112 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     final frameWeights = _blendshapeData![frameIndex];
 
     try {
-      // 🚀 性能优化：直接使用bs数据的前52个权重（权重52-54全为0，可忽略）
-      // 实体12有52个targets，完美匹配bs数据的前52个权重
-      final entity12Weights = frameWeights.sublist(0, 52);
+      // 🚀 获取前52个权重
+      var rawWeights = frameWeights.sublist(0, 52);
 
-      // 直接应用权重，实体12包含完整的面部控制（包括F.jawOpen）
+      // 📈 权重放大处理（保守2倍放大）
+      var amplifiedWeights = rawWeights
+          .map((w) => w * _weightAmplifier)
+          .toList();
+
+      // 🎯 权重限制（确保不超过1.0）
+      var clampedWeights = amplifiedWeights
+          .map((w) => w.clamp(0.0, 1.0))
+          .toList();
+
+      // 🌊 平滑处理（减少突变）
+      List<double> finalWeights;
+      if (_previousWeights != null &&
+          _previousWeights!.length == clampedWeights.length) {
+        // 线性插值平滑
+        finalWeights = List.generate(clampedWeights.length, (i) {
+          final current = clampedWeights[i];
+          final previous = _previousWeights![i];
+          return previous + (current - previous) * _smoothingFactor;
+        });
+      } else {
+        // 第一帧直接使用
+        finalWeights = clampedWeights;
+      }
+
+      // 💾 保存当前权重用于下一帧平滑
+      _previousWeights = List.from(finalWeights);
+
+      // 🎭 应用最终权重
       await _asset!.setMorphTargetWeights(
         selectedEntity.entityHandle,
-        entity12Weights,
+        finalWeights,
       );
 
-      // 每200帧打印一次详细信息
-      if (kDebugMode && frameIndex % 200 == 0) {
-        final significantWeights = <String>[];
-        for (
-          int i = 0;
-          i < entity12Weights.length && i < selectedEntity.morphTargets.length;
-          i++
-        ) {
-          if (entity12Weights[i] > 0.01) {
-            significantWeights.add(
-              '${selectedEntity.morphTargets[i]}=${entity12Weights[i].toStringAsFixed(3)}',
-            );
-          }
-        }
-
-        if (significantWeights.isNotEmpty) {
-          debugPrint(
-            '🎭 第 $frameIndex 帧主要权重: ${significantWeights.take(3).join(', ')}...',
-          );
-        }
-
-        // 显示 jawOpen 值（索引17）
-        if (entity12Weights.length > 17) {
-          debugPrint(
-            '   🦷 实体12 F.jawOpen = ${entity12Weights[17].toStringAsFixed(4)} (直接应用)',
-          );
-        }
+      // 📊 调试信息（每500帧打印一次）
+      if (kDebugMode && frameIndex % 500 == 0) {
+        final jawOpenRaw = rawWeights.length > 17 ? rawWeights[17] : 0.0;
+        final jawOpenFinal = finalWeights.length > 17 ? finalWeights[17] : 0.0;
+        debugPrint(
+          '🦷 第$frameIndex帧 jawOpen: ${jawOpenRaw.toStringAsFixed(4)} → ${jawOpenFinal.toStringAsFixed(4)} (原始权重+平滑)',
+        );
       }
     } catch (e) {
-      if (kDebugMode && frameIndex % 500 == 0) {
-        debugPrint('❌ 应用第 $frameIndex 帧失败: $e');
-      }
+      // 静默处理帧应用错误，避免日志干扰
     }
   }
 
-  // 永久禁用实体13，防止任何干扰
-  Future<void> _permanentlyDisableEntity13() async {
+  // 禁用实体13，防止与实体12冲突
+  Future<void> _disableEntity13() async {
     if (_asset == null) return;
 
     try {
-      // 查找实体13
-      final entity13Info = _entities.where((e) => e.index == 13).firstOrNull;
+      final childEntities = await _asset!.getChildEntities();
 
-      if (entity13Info != null) {
-        // 强制将实体13的所有权重设为0，并锁定
-        final zeroWeights = List<double>.filled(
-          entity13Info.morphTargets.length,
-          0.0,
-        );
+      // 确保实体13存在
+      if (childEntities.length <= 13) {
+        if (kDebugMode) debugPrint('⚠️ 实体13不存在，跳过禁用');
+        return;
+      }
 
-        // 多次应用确保生效
-        for (int i = 0; i < 3; i++) {
-          await _asset!.setMorphTargetWeights(
-            entity13Info.entityHandle,
-            zeroWeights,
-          );
-          await Future.delayed(const Duration(milliseconds: 10));
-        }
+      // 直接获取实体13
+      final entity13 = childEntities[13];
+      final morphTargets = await _asset!.getMorphTargetNames(entity: entity13);
+
+      if (morphTargets.isNotEmpty) {
+        // 将实体13的所有权重设为0
+        final zeroWeights = List<double>.filled(morphTargets.length, 0.0);
+
+        await _asset!.setMorphTargetWeights(entity13, zeroWeights);
 
         if (kDebugMode) {
-          debugPrint('🚫 实体13已被永久禁用，防止与实体12冲突');
+          debugPrint('🚫 实体13已被禁用（${morphTargets.length}个targets），防止与实体12冲突');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('⚠️ 永久禁用实体13失败: $e');
+        debugPrint('⚠️ 禁用实体13失败: $e');
       }
     }
   }
 
-  // 重置所有 morph 权重
+  // 重置实体12的 morph 权重
   Future<void> _resetAllMorphWeights() async {
-    if (_asset == null) return;
+    if (_asset == null || _entities.isEmpty) return;
 
     try {
-      // 重置所有检测到的实体
-      for (final entityInfo in _entities) {
-        final zeroWeights = List<double>.filled(
-          entityInfo.morphTargets.length,
-          0.0,
-        );
-        await _asset!.setMorphTargetWeights(
-          entityInfo.entityHandle,
-          zeroWeights,
-        );
-      }
+      // 只重置实体12
+      final entity12Info = _entities.first; // 现在只有实体12
+      final zeroWeights = List<double>.filled(
+        entity12Info.morphTargets.length,
+        0.0,
+      );
+      await _asset!.setMorphTargetWeights(
+        entity12Info.entityHandle,
+        zeroWeights,
+      );
 
       if (kDebugMode) {
-        debugPrint('🔄 已重置所有实体的 morph 权重');
+        debugPrint('🔄 已重置实体12的 morph 权重');
       }
     } catch (e) {
       if (kDebugMode) {
-        debugPrint('❌ 重置 morph 权重失败: $e');
+        debugPrint('❌ 重置实体12权重失败: $e');
       }
     }
   }
