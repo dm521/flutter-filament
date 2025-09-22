@@ -68,6 +68,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
   List<String> _animations = [];
   int _currentAnimationIndex = -1;
   int _idleAnimationIndex = -1; // idle动画索引
+  int _talkAnimationIndex = -1; // 说话动画索引
   bool _isPlaying = false;
 
   // 口型同步相关
@@ -88,7 +89,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
   // 权重优化参数
   static const double _weightAmplifier = 1.0; // 恢复原始权重，不放大
   List<double>? _previousWeights; // 用于平滑处理
-  static const double _smoothingFactor = 0.3; // 平滑系数 (0-1)
+  static const double _smoothingFactor = 0.0; // 禁用平滑处理
 
   @override
   void initState() {
@@ -344,8 +345,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
           }
         }
 
-        // 检测idle动画
+        // 检测idle和说话动画
         _detectIdleAnimation(animationNames);
+        _detectTalkAnimation(animationNames);
 
         // 如果有动画，默认选择第一个
         if (_animations.isNotEmpty) {
@@ -359,7 +361,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         await _loadBlendshapeData();
 
         // 🎭 自动播放idle动画
-        // await _startIdleAnimation();
+        await _startIdleAnimation();
 
         _isInitialized = true;
       } catch (e) {
@@ -526,6 +528,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         }
 
         // ✅ 已确认：权重52-54全为0，只使用前52个标准ARKit权重
+
+        // 🔍 分析jawOpen数据分布
+        _analyzeJawOpenData();
       }
 
       setState(() => _status = '✅ 口型同步系统准备就绪');
@@ -569,6 +574,53 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       _idleAnimationIndex = 0;
       if (kDebugMode) {
         debugPrint('⚠️ 未找到idle关键词，使用第一个动画作为idle: ${animationNames[0]}');
+      }
+    }
+  }
+
+  // 检测说话动画
+  void _detectTalkAnimation(List<String> animationNames) {
+    // 查找包含说话关键词的动画
+    const talkKeywords = [
+      'talk',
+      'Talk',
+      'TALK',
+      'speak',
+      'Speak',
+      'SPEAK',
+      'speech',
+      'Speech',
+      'SPEECH',
+      'conversation',
+      'Conversation',
+      'chat',
+      'Chat',
+    ];
+
+    for (int i = 0; i < animationNames.length; i++) {
+      final name = animationNames[i].toLowerCase();
+      for (final keyword in talkKeywords) {
+        if (name.contains(keyword.toLowerCase())) {
+          _talkAnimationIndex = i;
+          if (kDebugMode) {
+            debugPrint('🗣️ 找到说话动画: ${animationNames[i]} (索引: $i)');
+          }
+          return;
+        }
+      }
+    }
+
+    // 如果没找到说话动画，尝试找第二个动画（通常idle是第一个）
+    if (animationNames.length > 1) {
+      _talkAnimationIndex = 1;
+      if (kDebugMode) {
+        debugPrint('⚠️ 未找到说话关键词，使用第二个动画作为说话动画: ${animationNames[1]}');
+      }
+    } else {
+      // 如果只有一个动画，就用idle动画
+      _talkAnimationIndex = _idleAnimationIndex;
+      if (kDebugMode) {
+        debugPrint('⚠️ 只有一个动画，说话时将使用idle动画');
       }
     }
   }
@@ -654,17 +706,36 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         debugPrint('   使用实体: ${selectedEntity.index}');
         debugPrint('   总帧数: ${_blendshapeData!.length}');
         debugPrint('   音频文件: wav/output.wav');
-        debugPrint('   🔧 权重处理: 原始权重 (${_weightAmplifier}x)');
-        debugPrint('   🌊 平滑系数: $_smoothingFactor');
+        debugPrint(
+          '   �️ 说话动画: 混合模式: ${_talkAnimationIndex != -1 ? _animations[_talkAnimationIndex] : "无"}',
+        );
+        debugPrint('   🔧 权重处理: 选择性增强 (jawOpen: 1.1x)');
+        debugPrint('   🌊 平滑处理: 已禁用');
       }
 
-      // 停止所有动画，避免冲突（包括idle动画）
+      // 🎭 混合播放：说话动画 + 口型权重
       for (int i = 0; i < _animations.length; i++) {
         try {
           await _asset!.stopGltfAnimation(i);
         } catch (_) {}
       }
-      _isPlaying = false;
+
+      // 播放说话动画（身体动作）
+      if (_talkAnimationIndex != -1) {
+        try {
+          await _asset!.playGltfAnimation(_talkAnimationIndex, loop: true);
+          _currentAnimationIndex = _talkAnimationIndex;
+          _isPlaying = true;
+          if (kDebugMode) {
+            debugPrint('🗣️ 开始播放说话动画 (索引: $_talkAnimationIndex)');
+            debugPrint('🎭 混合模式：动画(身体) + morph权重(面部)');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            debugPrint('❌ 说话动画播放失败: $e');
+          }
+        }
+      }
 
       // 重置所有权重
       await _resetAllMorphWeights();
@@ -756,7 +827,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
-  // 应用单帧 blendshape 数据 - 优化版本（权重放大+平滑）
+  // 应用单帧 blendshape 数据 - 选择性增强版本
   Future<void> _applyBlendshapeFrame(int frameIndex) async {
     if (_blendshapeData == null ||
         _selectedMorphEntityIndex == null ||
@@ -770,47 +841,107 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       // 🚀 获取前52个权重
       var rawWeights = frameWeights.sublist(0, 52);
 
-      // 📈 权重放大处理（保守2倍放大）
-      var amplifiedWeights = rawWeights
-          .map((w) => w * _weightAmplifier)
-          .toList();
+      // 🎯 选择性权重增强（针对不同口型使用不同策略）
+      var enhancedWeights = List.generate(rawWeights.length, (i) {
+        final weight = rawWeights[i];
 
-      // 🎯 权重限制（确保不超过1.0）
-      var clampedWeights = amplifiedWeights
-          .map((w) => w.clamp(0.0, 1.0))
-          .toList();
+        // 根据ARKit标准索引进行选择性增强
+        if (i == 17) {
+          // jawOpen - 适度增强张嘴效果
+          return (weight * 0.9).clamp(0.0, 1.0);
+        } else if (i == 19) {
+          // mouthFunnel - 增强"o"音效果
+          return (weight * 1.5).clamp(0.0, 1.0);
+        } else if (i == 20) {
+          // mouthPucker - 增强"u"音效果
+          return (weight * 1.5).clamp(0.0, 1.0);
+        } else if (i >= 23 && i <= 26) {
+          // mouthSmile/Frown - 适度增强表情
+          return (weight * 1.3).clamp(0.0, 1.0);
+        } else if (i == 18) {
+          // mouthClose - 保持原始，避免过度闭合
+          return weight;
+        } else if (i >= 31 && i <= 34) {
+          // mouthRoll/Shrug - 增强嘴唇细节
+          return (weight * 1.4).clamp(0.0, 1.0);
+        } else {
+          // 其他权重保持原始
+          return weight;
+        }
+      });
 
-      // 🌊 平滑处理（减少突变）
-      List<double> finalWeights;
-      if (_previousWeights != null &&
-          _previousWeights!.length == clampedWeights.length) {
-        // 线性插值平滑
-        finalWeights = List.generate(clampedWeights.length, (i) {
-          final current = clampedWeights[i];
-          final previous = _previousWeights![i];
-          return previous + (current - previous) * _smoothingFactor;
-        });
-      } else {
-        // 第一帧直接使用
-        finalWeights = clampedWeights;
-      }
+      // 🌊 平滑处理（暂时禁用）
+      List<double> finalWeights = enhancedWeights; // 直接使用增强权重，不进行平滑
 
       // 💾 保存当前权重用于下一帧平滑
       _previousWeights = List.from(finalWeights);
 
-      // 🎭 应用最终权重
+      // 🎭 应用最终权重（混合模式：强制覆盖动画的面部权重）
       await _asset!.setMorphTargetWeights(
         selectedEntity.entityHandle,
         finalWeights,
       );
 
-      // 📊 调试信息（每500帧打印一次）
-      if (kDebugMode && frameIndex % 500 == 0) {
+      // 🔄 强制权重优先级：在混合模式下持续覆盖动画权重
+      if (_isPlaying) {
+        // 立即再次应用权重，确保覆盖动画
+        await _asset!.setMorphTargetWeights(
+          selectedEntity.entityHandle,
+          finalWeights,
+        );
+        
+        // 短暂延迟后再次应用，强制覆盖
+        await Future.delayed(const Duration(microseconds: 500));
+        await _asset!.setMorphTargetWeights(
+          selectedEntity.entityHandle,
+          finalWeights,
+        );
+      }
+
+      // 🧪 测试：每1000帧强制设置一个明显的jawOpen值
+      if (kDebugMode && frameIndex % 1000 == 0 && frameIndex > 0) {
+        final testWeights = List<double>.filled(52, 0.0);
+        testWeights[17] = 0.8; // 强制设置jawOpen为0.8
+        await _asset!.setMorphTargetWeights(
+          selectedEntity.entityHandle,
+          testWeights,
+        );
+        // 移除强制测试，权重应用已确认有效
+
+        // 等待一小段时间让用户看到效果
+        await Future.delayed(const Duration(milliseconds: 200));
+
+        // 恢复正常权重
+        await _asset!.setMorphTargetWeights(
+          selectedEntity.entityHandle,
+          finalWeights,
+        );
+        debugPrint('🔄 恢复正常权重');
+      }
+
+      // 📊 调试信息（每100帧打印一次，更频繁地监控）
+      if (kDebugMode && frameIndex % 100 == 0) {
         final jawOpenRaw = rawWeights.length > 17 ? rawWeights[17] : 0.0;
+        final jawOpenEnhanced = enhancedWeights.length > 17
+            ? enhancedWeights[17]
+            : 0.0;
         final jawOpenFinal = finalWeights.length > 17 ? finalWeights[17] : 0.0;
         debugPrint(
-          '🦷 第$frameIndex帧 jawOpen: ${jawOpenRaw.toStringAsFixed(4)} → ${jawOpenFinal.toStringAsFixed(4)} (原始权重+平滑)',
+          '🦷 第$frameIndex帧 jawOpen: ${jawOpenRaw.toStringAsFixed(4)} → ${jawOpenEnhanced.toStringAsFixed(4)} → ${jawOpenFinal.toStringAsFixed(4)} (选择性增强)',
         );
+        debugPrint(
+          '   🎭 当前播放动画: ${_isPlaying ? _animations[_currentAnimationIndex] : "无"}',
+        );
+        debugPrint('   ⚠️ 动画可能覆盖morph target权重');
+
+        // 显示其他关键权重
+        if (rawWeights.length > 19) {
+          final funnelRaw = rawWeights[19];
+          final funnelFinal = finalWeights[19];
+          debugPrint(
+            '   👄 mouthFunnel: ${funnelRaw.toStringAsFixed(4)} → ${funnelFinal.toStringAsFixed(4)}',
+          );
+        }
       }
     } catch (e) {
       // 静默处理帧应用错误，避免日志干扰
@@ -848,6 +979,46 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       if (kDebugMode) {
         debugPrint('⚠️ 禁用实体13失败: $e');
       }
+    }
+  }
+
+  // 分析jawOpen数据分布
+  void _analyzeJawOpenData() {
+    if (_blendshapeData == null) return;
+
+    try {
+      final jawOpenValues = <double>[];
+      for (final frame in _blendshapeData!) {
+        if (frame.length > 17) {
+          jawOpenValues.add(frame[17]);
+        }
+      }
+
+      if (jawOpenValues.isNotEmpty) {
+        final maxJawOpen = jawOpenValues.reduce((a, b) => a > b ? a : b);
+        final minJawOpen = jawOpenValues.reduce((a, b) => a < b ? a : b);
+        final avgJawOpen =
+            jawOpenValues.reduce((a, b) => a + b) / jawOpenValues.length;
+        final nonZeroCount = jawOpenValues.where((v) => v > 0.001).length;
+
+        debugPrint('📊 jawOpen数据分析:');
+        debugPrint('   最大值: ${maxJawOpen.toStringAsFixed(4)}');
+        debugPrint('   最小值: ${minJawOpen.toStringAsFixed(4)}');
+        debugPrint('   平均值: ${avgJawOpen.toStringAsFixed(4)}');
+        debugPrint(
+          '   非零帧数: $nonZeroCount/${jawOpenValues.length} (${(nonZeroCount / jawOpenValues.length * 100).toStringAsFixed(1)}%)',
+        );
+
+        // 找到最大jawOpen值的帧
+        final maxIndex = jawOpenValues.indexOf(maxJawOpen);
+        debugPrint('   最大值出现在第${maxIndex}帧');
+
+        if (maxJawOpen < 0.01) {
+          debugPrint('⚠️ jawOpen数据可能有问题：最大值只有${maxJawOpen.toStringAsFixed(4)}');
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ jawOpen数据分析失败: $e');
     }
   }
 
