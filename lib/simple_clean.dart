@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,7 +18,7 @@ class SimpleTestApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '口型同步测试',
+      title: '写实数字人测试',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
@@ -63,6 +64,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
   ThermionAsset? _asset;
   List<String> _animations = [];
   int _currentAnimationIndex = -1;
+  int _idleAnimationIndex = -1; // idle动画索引
   bool _isPlaying = false;
 
   // 口型同步相关
@@ -136,13 +138,19 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
         await _viewer!.destroyLights();
       } catch (_) {}
 
-      // 主太阳光 - 基于专业配置
+      // 主太阳光 - 基于新 settings.json 参数
+      // sunlightColor: [0.955105, 0.827571, 0.767769] 对应暖白色
+      // 通过色温近似: ~5400K (暖白)
       await _viewer!.addDirectLight(
         DirectLight.sun(
           color: 5400.0, // 暖白色温
-          intensity: 75000.0, // 主光强度
+          intensity: 75000.0, // 更新为 settings.json 的 sunlightIntensity
           castShadows: true, // 启用阴影
-          direction: Vector3(0.366695, -0.357967, -0.858717), // 专业角度
+          direction: Vector3(
+            0.366695,
+            -0.357967,
+            -0.858717,
+          ), // 更新为 settings.json 的最新方向
         ),
       );
 
@@ -163,6 +171,26 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
           intensity: 25000.0, // 中等强度背光
           castShadows: false,
           direction: Vector3(-0.2, -0.3, 0.9).normalized(), // 从背面照射
+        ),
+      );
+
+      // 左侧补光 - 减少侧面阴影
+      await _viewer!.addDirectLight(
+        DirectLight.sun(
+          color: 5700.0, // 中性光
+          intensity: 18000.0, // 适中强度
+          castShadows: false,
+          direction: Vector3(-0.8, -0.2, -0.3).normalized(), // 从左侧照射
+        ),
+      );
+
+      // 右侧轮廓光 - 保持立体感
+      await _viewer!.addDirectLight(
+        DirectLight.sun(
+          color: 6200.0, // 稍冷的轮廓光
+          intensity: 15000.0, // 适度轮廓光
+          castShadows: false,
+          direction: Vector3(0.8, -0.1, 0.5).normalized(), // 从右侧照射
         ),
       );
 
@@ -250,6 +278,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
           }
         }
 
+        // 检测idle动画
+        _detectIdleAnimation(animationNames);
+
         // 如果有动画，默认选择第一个
         if (_animations.isNotEmpty) {
           _currentAnimationIndex = 0;
@@ -260,6 +291,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
 
         // 加载 blendshape 数据
         await _loadBlendshapeData();
+
+        // 🎭 自动播放idle动画
+        await _startIdleAnimation();
       } catch (e) {
         setState(() => _status = '⚠️ 模型加载失败: $e');
         if (kDebugMode) debugPrint('模型加载失败: $e');
@@ -451,6 +485,8 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
             '   🦷 第一帧 jawOpen [17] = ${firstFrame[17].toStringAsFixed(4)}',
           );
         }
+
+        // ✅ 已确认：权重52-54全为0，只使用前52个标准ARKit权重
       }
 
       setState(() => _status = '✅ 口型同步系统准备就绪');
@@ -459,6 +495,94 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
       setState(() => _status = '❌ blendshape 数据加载失败: $e');
       if (kDebugMode) {
         debugPrint('❌ 加载 blendshape 数据失败: $e');
+      }
+    }
+  }
+
+  // 检测idle动画
+  void _detectIdleAnimation(List<String> animationNames) {
+    // 查找包含idle关键词的动画
+    const idleKeywords = [
+      'idle',
+      'Idle',
+      'IDLE',
+      'wait',
+      'Wait',
+      'stand',
+      'Stand',
+    ];
+
+    for (int i = 0; i < animationNames.length; i++) {
+      final name = animationNames[i].toLowerCase();
+      for (final keyword in idleKeywords) {
+        if (name.contains(keyword.toLowerCase())) {
+          _idleAnimationIndex = i;
+          if (kDebugMode) {
+            debugPrint('🎯 找到idle动画: ${animationNames[i]} (索引: $i)');
+          }
+          return;
+        }
+      }
+    }
+
+    // 如果没找到idle动画，使用第一个动画作为idle
+    if (animationNames.isNotEmpty) {
+      _idleAnimationIndex = 0;
+      if (kDebugMode) {
+        debugPrint('⚠️ 未找到idle关键词，使用第一个动画作为idle: ${animationNames[0]}');
+      }
+    }
+  }
+
+  // 开始播放idle动画
+  Future<void> _startIdleAnimation() async {
+    if (_asset == null || _idleAnimationIndex == -1) return;
+
+    try {
+      setState(() => _status = '🎭 启动idle动画...');
+
+      if (kDebugMode) {
+        debugPrint('🎭 开始播放idle动画 (索引: $_idleAnimationIndex)');
+      }
+
+      // 播放idle动画，循环播放
+      await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
+      _isPlaying = true;
+      _currentAnimationIndex = _idleAnimationIndex;
+
+      setState(() => _status = '✅ 角色已就绪，idle动画播放中');
+
+      if (kDebugMode) {
+        debugPrint('✅ Idle动画播放成功');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ Idle动画播放失败: $e');
+      }
+      setState(() => _status = '⚠️ Idle动画播放失败，但系统可用');
+    }
+  }
+
+  // 恢复idle动画播放
+  Future<void> _resumeIdleAnimation() async {
+    if (_asset == null || _idleAnimationIndex == -1) return;
+
+    try {
+      if (kDebugMode) {
+        debugPrint('🔄 恢复idle动画播放');
+      }
+
+      // 重新播放idle动画
+      await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
+      _isPlaying = true;
+      _currentAnimationIndex = _idleAnimationIndex;
+
+      if (kDebugMode) {
+        debugPrint('✅ Idle动画已恢复');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 恢复idle动画失败: $e');
       }
     }
   }
@@ -493,15 +617,19 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
         debugPrint('   音频文件: wav/output.wav');
       }
 
-      // 停止所有动画，避免冲突
+      // 停止所有动画，避免冲突（包括idle动画）
       for (int i = 0; i < _animations.length; i++) {
         try {
           await _asset!.stopGltfAnimation(i);
         } catch (_) {}
       }
+      _isPlaying = false;
 
       // 重置所有权重
       await _resetAllMorphWeights();
+
+      // 🔥 关键修复：在播放开始时就彻底禁用实体13
+      await _permanentlyDisableEntity13();
 
       setState(() {}); // 更新 UI 状态
 
@@ -574,6 +702,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
       // 重置所有 morph 权重
       await _resetAllMorphWeights();
 
+      // 🎭 恢复idle动画
+      await _resumeIdleAnimation();
+
       setState(() {}); // 更新 UI 状态
 
       if (kDebugMode) {
@@ -586,7 +717,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
     }
   }
 
-  // 应用单帧 blendshape 数据
+  // 应用单帧 blendshape 数据 - 性能优化版本
   Future<void> _applyBlendshapeFrame(int frameIndex) async {
     if (_blendshapeData == null ||
         _selectedMorphEntityIndex == null ||
@@ -597,45 +728,27 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
     final frameWeights = _blendshapeData![frameIndex];
 
     try {
-      // 准备实体12的权重（主要面部表情）
-      final entity12Weights = List<double>.filled(
-        selectedEntity.morphTargets.length,
-        0.0,
-      );
-      final copyLength = frameWeights.length < entity12Weights.length
-          ? frameWeights.length
-          : entity12Weights.length;
+      // 🚀 性能优化：直接使用bs数据的前52个权重（权重52-54全为0，可忽略）
+      // 实体12有52个targets，完美匹配bs数据的前52个权重
+      final entity12Weights = frameWeights.sublist(0, 52);
 
-      for (int i = 0; i < copyLength; i++) {
-        entity12Weights[i] = frameWeights[i];
-      }
-
-      // 🔥 修改策略：保持实体12的 jawOpen，让实体12和实体13同时工作
-      // 不再禁用实体12的 jawOpen，使用原始数据
-
-      // 应用实体12的权重
+      // 直接应用权重，实体12包含完整的面部控制（包括F.jawOpen）
       await _asset!.setMorphTargetWeights(
         selectedEntity.entityHandle,
         entity12Weights,
       );
-
-      // 🦷 同时处理实体13的专门 jawOpen 控制
-      await _applyEntity13JawOpen(frameWeights);
 
       // 每200帧打印一次详细信息
       if (kDebugMode && frameIndex % 200 == 0) {
         final significantWeights = <String>[];
         for (
           int i = 0;
-          i < frameWeights.length && i < selectedEntity.morphTargets.length;
+          i < entity12Weights.length && i < selectedEntity.morphTargets.length;
           i++
         ) {
-          if (frameWeights[i] > 0.01) {
-            final targetName = i < selectedEntity.morphTargets.length
-                ? selectedEntity.morphTargets[i]
-                : 'Unknown';
+          if (entity12Weights[i] > 0.01) {
             significantWeights.add(
-              '$targetName=${frameWeights[i].toStringAsFixed(3)}',
+              '${selectedEntity.morphTargets[i]}=${entity12Weights[i].toStringAsFixed(3)}',
             );
           }
         }
@@ -646,61 +759,52 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
           );
         }
 
-        // 特别显示 jawOpen 值和实际应用情况
-        if (frameWeights.length > 17) {
-          final jawOpenValue = frameWeights[17];
+        // 显示 jawOpen 值（索引17）
+        if (entity12Weights.length > 17) {
           debugPrint(
-            '   🦷 原始 jawOpen [17] = ${jawOpenValue.toStringAsFixed(4)}',
-          );
-          debugPrint(
-            '   🦷 实体12 F.jawOpen = ${jawOpenValue.toStringAsFixed(4)} (保持原值)',
+            '   🦷 实体12 F.jawOpen = ${entity12Weights[17].toStringAsFixed(4)} (直接应用)',
           );
         }
       }
     } catch (e) {
       if (kDebugMode && frameIndex % 500 == 0) {
-        // 减少错误日志频率
         debugPrint('❌ 应用第 $frameIndex 帧失败: $e');
       }
     }
   }
 
-  // 应用实体13的 jawOpen 控制
-  Future<void> _applyEntity13JawOpen(List<double> frameWeights) async {
+  // 永久禁用实体13，防止任何干扰
+  Future<void> _permanentlyDisableEntity13() async {
     if (_asset == null) return;
 
     try {
       // 查找实体13
-      final entity13Info = _entities.firstWhere(
-        (e) => e.index == 13,
-        orElse: () => throw Exception('实体13未找到'),
-      );
+      final entity13Info = _entities.where((e) => e.index == 13).firstOrNull;
 
-      // 获取 jawOpen 权重（索引17），使用原始数据，不放大
-      final jawOpenValue = frameWeights.length > 17 ? frameWeights[17] : 0.0;
-
-      // 应用到实体13，使用原始权重值
-      final entity13Weights = List<double>.filled(
-        entity13Info.morphTargets.length,
-        0.0,
-      );
-      if (entity13Weights.isNotEmpty) {
-        entity13Weights[0] = jawOpenValue.clamp(0.0, 1.0); // T.jawOpen 使用原始值
-      }
-
-      await _asset!.setMorphTargetWeights(
-        entity13Info.entityHandle,
-        entity13Weights,
-      );
-
-      // 增加调试日志，显示实际应用的权重
-      if (kDebugMode && jawOpenValue > 0.01) {
-        debugPrint(
-          '   🦷 实体13 T.jawOpen = ${jawOpenValue.toStringAsFixed(4)} (原始值)',
+      if (entity13Info != null) {
+        // 强制将实体13的所有权重设为0，并锁定
+        final zeroWeights = List<double>.filled(
+          entity13Info.morphTargets.length,
+          0.0,
         );
+
+        // 多次应用确保生效
+        for (int i = 0; i < 3; i++) {
+          await _asset!.setMorphTargetWeights(
+            entity13Info.entityHandle,
+            zeroWeights,
+          );
+          await Future.delayed(const Duration(milliseconds: 10));
+        }
+
+        if (kDebugMode) {
+          debugPrint('🚫 实体13已被永久禁用，防止与实体12冲突');
+        }
       }
     } catch (e) {
-      // 静默处理实体13错误，不影响主要播放
+      if (kDebugMode) {
+        debugPrint('⚠️ 永久禁用实体13失败: $e');
+      }
     }
   }
 
@@ -754,8 +858,12 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
                   ),
           ),
 
-          // 简化的控制面板 - 使用 Flexible 避免溢出
+          // 🔧 修复：固定最小高度的控制面板，防止Surface重建
           Container(
+            constraints: const BoxConstraints(
+              minHeight: 80, // 最小高度，允许内容适应
+              maxHeight: 100, // 最大高度，防止过度扩展
+            ),
             padding: const EdgeInsets.symmetric(
               horizontal: 16.0,
               vertical: 8.0,
@@ -797,62 +905,75 @@ class _SimpleThermionTestState extends State<SimpleThermionTest> {
 
     return Column(
       mainAxisSize: MainAxisSize.min, // 使用最小空间
+      mainAxisAlignment: MainAxisAlignment.center, // 居中对齐
       children: [
-        // 播放控制按钮
+        // 播放控制按钮 - 紧凑布局
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            ElevatedButton.icon(
-              onPressed: !_isLipSyncPlaying && _selectedMorphEntityIndex != null
-                  ? _playLipSync
-                  : null,
-              icon: const Icon(Icons.play_arrow, size: 16),
-              label: const Text('播放', style: TextStyle(fontSize: 13)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 4,
+            Flexible(
+              child: ElevatedButton.icon(
+                onPressed:
+                    !_isLipSyncPlaying && _selectedMorphEntityIndex != null
+                    ? _playLipSync
+                    : null,
+                icon: const Icon(Icons.play_arrow, size: 14),
+                label: const Text('播放', style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  minimumSize: const Size(60, 30),
                 ),
-                minimumSize: const Size(70, 28),
               ),
             ),
-            ElevatedButton.icon(
-              onPressed: _isLipSyncPlaying ? _stopLipSync : null,
-              icon: const Icon(Icons.stop, size: 16),
-              label: const Text('停止', style: TextStyle(fontSize: 13)),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 4,
+            const SizedBox(width: 16),
+            Flexible(
+              child: ElevatedButton.icon(
+                onPressed: _isLipSyncPlaying ? _stopLipSync : null,
+                icon: const Icon(Icons.stop, size: 14),
+                label: const Text('停止', style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  minimumSize: const Size(60, 30),
                 ),
-                minimumSize: const Size(70, 28),
               ),
             ),
           ],
         ),
-        // 播放状态指示器（如果正在播放）
-        if (_isLipSyncPlaying) ...[
-          const SizedBox(height: 2),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const SizedBox(
-                width: 10,
-                height: 10,
-                child: CircularProgressIndicator(strokeWidth: 1),
-              ),
-              const SizedBox(width: 4),
-              Text(
-                '播放中...',
-                style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-              ),
-            ],
-          ),
-        ],
+        const SizedBox(height: 4),
+        // 🔧 修复：紧凑的状态指示器
+        SizedBox(
+          height: 18, // 稍微增加高度适应内容
+          child: _isLipSyncPlaying
+              ? Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.5),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '播放中...',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                )
+              : const SizedBox.shrink(), // 播放停止时显示空白但保持高度
+        ),
       ],
     );
   }
