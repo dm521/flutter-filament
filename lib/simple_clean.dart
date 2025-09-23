@@ -48,7 +48,6 @@ class SimpleThermionTest extends StatefulWidget {
 class _SimpleThermionTestState extends State<SimpleThermionTest>
     with WidgetsBindingObserver {
   // ===== 系统常量 =====
-  static const int _arkitBlendshapeCount = 52;
   static const double _sunlightIntensity = 15600.0;
   static const double _sunlightColorTemp = 6400.0;
   static const double _iblIntensity = 75000.0;
@@ -64,7 +63,6 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
 
   // ===== 动画系统 =====
   final List<String> _animations = [];
-  int _idleAnimationIndex = -1;
   int _selectedTalkAnimation = 1;
 
   // ===== 革命性口型同步系统 =====
@@ -73,11 +71,17 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isLipSyncPlaying = false;
   StreamSubscription<void>? _completeSubscription;
+  bool _isMorphAnimationConfigured = false;
+
+  // 手动滑块控制的状态变量
+  double _headJawOpenValue = 0.0;
+  double _mouthJawOpenValue = 0.0;
+  bool _morphAnimationComponentAdded = false;
+
+  // ===== 简化测试：移除动画更新循环相关变量 =====
 
   // ===== 交互控制系统 =====
   dynamic _inputHandler;
-  bool _isPlaying = false;
-  int _currentAnimationIndex = -1;
   StreamSubscription<Duration>? _positionSubscription;
 
   // ===== 相机预设系统 =====
@@ -123,9 +127,6 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       await _viewer!.setRendering(true);
 
       // 🚫 禁用idle动画恢复（纯口型测试模式）
-      // if (_isInitialized && _idleAnimationIndex != -1 && !_isLipSyncPlaying) {
-      //   await _resumeIdleAnimation();
-      // }
 
       if (kDebugMode) {
         debugPrint('🚫 应用恢复时不启动idle动画（纯口型测试模式）');
@@ -318,7 +319,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       // 尝试加载你的角色模型
       try {
         setState(() => _status = '加载角色模型...');
-        _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0919_2.glb");
+        _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0922.glb");
         // 🔧 移除transformToUnitCube，避免破坏骨骼绑定导致模型破裂
         // await _asset!.transformToUnitCube();
 
@@ -348,9 +349,6 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
             debugPrint('   ${i + 1}. ${_animations[i]}');
           }
         }
-
-        // 检测idle动画
-        _detectIdleAnimation(animationNames);
 
         // 🔍 调试：打印模型实体信息
         try {
@@ -486,6 +484,561 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
+  /// 🎯 测试GLB内置动画方案（基于GPT-5建议）
+  Future<void> _testBuiltInGlbAnimation() async {
+    if (_asset == null) return;
+
+    try {
+      debugPrint('🎯 GPT-5建议：测试GLB内置的Xiaomeng_talk_03动画');
+
+      // 获取GLB中的所有动画
+      final animationNames = await _asset!.getGltfAnimationNames();
+      debugPrint('📋 GLB动画列表: $animationNames');
+
+      // 直接测试talk_03双实体同步效果
+      int? talk03Index;
+      for (int i = 0; i < animationNames.length; i++) {
+        final name = animationNames[i];
+        debugPrint('   动画$i: $name');
+        if (name.contains('talk_03') || name.contains('talk03')) {
+          talk03Index = i;
+          debugPrint('✅ 找到talk_03动画: $name (索引: $i)');
+          break;
+        }
+      }
+
+      if (talk03Index != null) {
+        debugPrint('🚀 播放GLB内置talk_03动画 - 同时驱动Head_Mod + Mouth_Mod');
+        await _asset!.playGltfAnimation(talk03Index);
+        setState(() => _status = '🎬 播放talk_03 (双实体同步)');
+        debugPrint('✅ talk_03动画已启动，应该看到Head_Mod + Mouth_Mod同时动作');
+        debugPrint('🔍 观察牙齿是否和GLTF查看器中一样明显可见');
+
+        // 等待3秒观察talk_03效果
+        await Future.delayed(Duration(seconds: 3));
+        await _asset!.stopGltfAnimation(talk03Index);
+        debugPrint('🛑 talk_03动画已停止');
+
+        // 🎯 现在进行极限手动测试
+        await _performExtremeJawOpenTest();
+      }
+    } catch (e) {
+      debugPrint('❌ GLB内置动画测试失败: $e');
+      setState(() => _status = '❌ 内置动画失败: $e');
+    }
+  }
+
+  /// 🎯 模仿GLB内置动画：统一MorphAnimationData方法
+  Future<void> _testUnifiedMorphAnimation() async {
+    if (_asset == null || _blendshapeData == null) return;
+
+    try {
+      debugPrint('🎯 我们的方法：统一设置Head_Mod + Mouth_Mod，用bs.json数据同时驱动');
+
+      // 🔍 获取所有需要的morph target名称
+      final childEntities = await _asset!.getChildEntities();
+      debugPrint('📋 检查实体的morph targets...');
+
+      List<String> allMorphTargetNames = [];
+      Map<String, int> morphToIndexMap = {};
+
+      // 收集Head_Mod的morph targets
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+        final morphTargets = await _asset!.getMorphTargetNames(entity: entity);
+
+        if (entityName == "Head_Mod" && morphTargets.isNotEmpty) {
+          debugPrint('✅ Head_Mod (实体$i): ${morphTargets.length}个morph targets');
+          for (final morphName in morphTargets) {
+            if (morphName.startsWith('F.')) {
+              allMorphTargetNames.add(morphName);
+              morphToIndexMap[morphName] = allMorphTargetNames.length - 1;
+            }
+          }
+        }
+
+        if (entityName == "Mouth_Mod" && morphTargets.isNotEmpty) {
+          debugPrint(
+            '✅ Mouth_Mod (实体$i): ${morphTargets.length}个morph targets',
+          );
+          for (final morphName in morphTargets) {
+            if (morphName == "T.jawOpen") {
+              allMorphTargetNames.add(morphName);
+              morphToIndexMap[morphName] = allMorphTargetNames.length - 1;
+            }
+          }
+        }
+      }
+
+      debugPrint('📋 统一morph target列表: $allMorphTargetNames');
+      debugPrint('🗺️ 映射关系: $morphToIndexMap');
+
+      if (allMorphTargetNames.isEmpty) {
+        debugPrint('❌ 未找到任何morph targets');
+        return;
+      }
+
+      // 🎯 创建统一的动画数据（模仿GLB内置动画的结构）
+      final totalFrames = _blendshapeData!.length;
+      final frameLengthMs = 59160.0 / totalFrames; // 30 FPS
+
+      final unifiedFlatData = Float32List(
+        totalFrames * allMorphTargetNames.length,
+      );
+
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = _blendshapeData![frame];
+        final baseIndex = frame * allMorphTargetNames.length;
+
+        for (int i = 0; i < allMorphTargetNames.length; i++) {
+          final morphName = allMorphTargetNames[i];
+
+          if (morphName.startsWith('F.')) {
+            // F前缀：从bs.json映射
+            final baseName = morphName.substring(2);
+            final bsJsonIndex = _findBsJsonIndex(baseName);
+            if (bsJsonIndex >= 0 && bsJsonIndex < frameWeights.length) {
+              unifiedFlatData[baseIndex + i] = frameWeights[bsJsonIndex];
+            }
+          } else if (morphName == "T.jawOpen") {
+            // T.jawOpen：来自bs.json索引17，增强权重
+            if (frameWeights.length > 17) {
+              final enhancedWeight = frameWeights[17] * 2.0;
+              unifiedFlatData[baseIndex + i] = enhancedWeight > 1.0
+                  ? 1.0
+                  : enhancedWeight;
+            }
+          }
+        }
+      }
+
+      final unifiedMorphData = MorphAnimationData(
+        unifiedFlatData,
+        allMorphTargetNames,
+        frameLengthInMs: frameLengthMs,
+      );
+
+      debugPrint('🚀 设置统一MorphAnimationData，同时驱动Head_Mod + Mouth_Mod');
+
+      // 🎯 首先确保animation component已激活
+      await _asset!.addAnimationComponent();
+
+      // 🎯 关键：指定targetMeshNames，避免应用到没有morph targets的XiaoMeng_Body
+      debugPrint('🎯 指定targetMeshNames: ["Head_Mod", "Mouth_Mod"]');
+      await _asset!.setMorphAnimationData(
+        unifiedMorphData,
+        targetMeshNames: ["Head_Mod", "Mouth_Mod"],
+      );
+
+      debugPrint('✅ 统一动画数据已设置，检查Head_Mod + Mouth_Mod是否同时工作');
+      setState(() => _status = '🎯 统一morph动画已启动');
+    } catch (e) {
+      debugPrint('❌ 统一MorphAnimationData失败: $e');
+      setState(() => _status = '❌ 统一动画失败: $e');
+    }
+  }
+
+  /// 辅助方法：查找bs.json中的索引
+  int _findBsJsonIndex(String baseName) {
+    const bsJsonNames = [
+      "browDownLeft",
+      "browDownRight",
+      "browInnerUp",
+      "browOuterUpLeft",
+      "browOuterUpRight",
+      "cheekPuff",
+      "cheekSquintLeft",
+      "cheekSquintRight",
+      "eyeBlinkLeft",
+      "eyeBlinkRight",
+      "eyeLookDownLeft",
+      "eyeLookDownRight",
+      "eyeLookInLeft",
+      "eyeLookInRight",
+      "eyeLookOutLeft",
+      "eyeLookOutRight",
+      "eyeLookUpLeft",
+      "eyeLookUpRight",
+      "eyeSquintLeft",
+      "eyeSquintRight",
+      "eyeWideLeft",
+      "eyeWideRight",
+      "jawForward",
+      "jawLeft",
+      "jawRight",
+      "jawOpen",
+      "mouthClose",
+      "mouthFunnel",
+      "mouthPucker",
+      "mouthLeft",
+      "mouthRight",
+      "mouthSmileLeft",
+      "mouthSmileRight",
+      "mouthFrownLeft",
+      "mouthFrownRight",
+      "mouthDimpleLeft",
+      "mouthDimpleRight",
+      "mouthStretchLeft",
+      "mouthStretchRight",
+      "mouthRollLower",
+      "mouthRollUpper",
+      "mouthShrugLower",
+      "mouthShrugUpper",
+      "mouthPressLeft",
+      "mouthPressRight",
+      "mouthLowerDownLeft",
+      "mouthLowerDownRight",
+      "mouthUpperUpLeft",
+      "mouthUpperUpRight",
+      "noseSneerLeft",
+      "noseSneerRight",
+      "tongueOut",
+    ];
+
+    return bsJsonNames.indexOf(baseName);
+  }
+
+  /// 🎯 手动控制Head_Mod的F.jawOpen
+  Future<void> _setHeadJawOpen(double value) async {
+    if (_asset == null) return;
+
+    setState(() => _headJawOpenValue = value);
+
+    try {
+      final childEntities = await _asset!.getChildEntities();
+
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+
+        if (entityName == "Head_Mod") {
+          // 获取Head_Mod的所有morph targets
+          final morphTargets = await _asset!.getMorphTargetNames(
+            entity: entity,
+          );
+
+          // 找到F.jawOpen的索引
+          int jawOpenIndex = -1;
+          for (int j = 0; j < morphTargets.length; j++) {
+            if (morphTargets[j] == "F.jawOpen") {
+              jawOpenIndex = j;
+              break;
+            }
+          }
+
+          if (jawOpenIndex >= 0) {
+            // 创建权重数组，只设置F.jawOpen
+            final weights = List<double>.filled(morphTargets.length, 0.0);
+            weights[jawOpenIndex] = value;
+
+            await _asset!.setMorphTargetWeights(entity, weights);
+            debugPrint('✅ Head_Mod F.jawOpen设置为: $value');
+          } else {
+            debugPrint('❌ 未找到F.jawOpen在Head_Mod中');
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ 设置Head_Mod失败: $e');
+    }
+  }
+
+  /// 🎯 手动控制Mouth_Mod的T.jawOpen
+  Future<void> _setMouthJawOpen(double value) async {
+    if (_asset == null) return;
+
+    setState(() => _mouthJawOpenValue = value);
+
+    try {
+      final childEntities = await _asset!.getChildEntities();
+
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+
+        if (entityName == "Mouth_Mod") {
+          // 🔍 详细调试：检查Mouth_Mod的状态
+          debugPrint('🔍 找到Mouth_Mod实体，实体索引: $i');
+
+          final morphTargets = await _asset!.getMorphTargetNames(
+            entity: entity,
+          );
+          debugPrint('🔍 Mouth_Mod的morph targets: $morphTargets');
+
+          if (morphTargets.isNotEmpty) {
+            // 🎯 确保animation component只添加一次
+            if (!_morphAnimationComponentAdded) {
+              try {
+                await _asset!.addAnimationComponent();
+                _morphAnimationComponentAdded = true;
+                debugPrint('✅ Animation component已添加（一次性）');
+              } catch (e) {
+                debugPrint('⚠️ addAnimationComponent失败: $e');
+              }
+            }
+
+            // 🎯 直接设置权重
+            await _asset!.setMorphTargetWeights(entity, [value]);
+            debugPrint('✅ Mouth_Mod T.jawOpen设置为: $value');
+          } else {
+            debugPrint('❌ Mouth_Mod没有morph targets！');
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ 设置Mouth_Mod失败: $e');
+    }
+  }
+
+  /// 🔍 检查GLB模型的所有实体信息
+  Future<void> _checkAllEntities() async {
+    if (_asset == null) return;
+
+    try {
+      debugPrint('🔍 ====== GLB实体详细检查 ======');
+
+      final childEntities = await _asset!.getChildEntities();
+      debugPrint('📊 总实体数量: ${childEntities.length}');
+
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+
+        try {
+          final entityName = FilamentApp.instance!.getNameForEntity(entity);
+          debugPrint('');
+          debugPrint('🏷️ 实体 $i:');
+          debugPrint('   名称: "$entityName"');
+
+          // 检查morph targets
+          final morphTargets = await _asset!.getMorphTargetNames(
+            entity: entity,
+          );
+          if (morphTargets.isNotEmpty) {
+            debugPrint('   🎭 Morph Targets (${morphTargets.length}个):');
+            for (int j = 0; j < morphTargets.length; j++) {
+              debugPrint('      [$j]: ${morphTargets[j]}');
+            }
+          } else {
+            debugPrint('   🚫 无morph targets');
+          }
+        } catch (e) {
+          debugPrint('   ❌ 获取实体$i信息失败: $e');
+        }
+      }
+
+      debugPrint('');
+      debugPrint('🔍 ====== 检查完成 ======');
+      setState(() => _status = '✅ GLB实体检查完成，查看日志');
+    } catch (e) {
+      debugPrint('❌ 检查实体失败: $e');
+      setState(() => _status = '❌ 实体检查失败: $e');
+    }
+  }
+
+  /// 🔥 极限T.jawOpen测试方法
+  Future<void> _performExtremeJawOpenTest() async {
+    if (_asset == null) return;
+
+    try {
+      debugPrint('🔥 开始极限T.jawOpen测试...');
+      final childEntities = await _asset!.getChildEntities();
+
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+
+        if (entityName == "Mouth_Mod") {
+          debugPrint('🎯 找到Mouth_Mod实体，开始极限测试...');
+
+          // 🔥 极限测试：多次大幅度变化
+          for (int test = 0; test < 3; test++) {
+            debugPrint('🔥 第${test + 1}轮测试：T.jawOpen 1.0');
+            await _asset!.setMorphTargetWeights(entity, [1.0]);
+            setState(() => _status = '🔥 T.jawOpen权重1.0 (第${test + 1}轮)');
+            await Future.delayed(Duration(milliseconds: 1500));
+
+            debugPrint('🔥 第${test + 1}轮测试：T.jawOpen 0.0');
+            await _asset!.setMorphTargetWeights(entity, [0.0]);
+            setState(() => _status = '🔥 T.jawOpen权重0.0 (第${test + 1}轮)');
+            await Future.delayed(Duration(milliseconds: 1500));
+          }
+
+          debugPrint('🎯 极限测试完成：如果还是看不到牙齿动作，说明T.jawOpen在thermion中效果极微弱');
+          setState(() => _status = '🎯 T.jawOpen极限测试完成');
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ 极限测试失败: $e');
+      setState(() => _status = '❌ 极限测试失败: $e');
+    }
+  }
+
+  /// 🎯 改进的分离设置方法：确保Mouth_Mod正确工作
+  Future<void> _testSeparateMorphAnimation() async {
+    if (_asset == null || _blendshapeData == null) return;
+
+    try {
+      debugPrint('🎯 改进的分离方法：分别设置Head_Mod和Mouth_Mod，确保Mouth_Mod工作');
+
+      final totalFrames = _blendshapeData!.length;
+      final frameLengthMs = 59160.0 / totalFrames; // 30 FPS
+
+      // 🎯 步骤1：首先确保animation component已激活
+      await _asset!.addAnimationComponent();
+      debugPrint('✅ Animation component已激活');
+
+      // 🎯 步骤2：先设置Mouth_Mod（重点测试）
+      final jawOnlyData = Float32List(totalFrames);
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = _blendshapeData![frame];
+        if (frameWeights.length > 17) {
+          // 极大增强T.jawOpen权重，确保牙齿动作非常明显
+          jawOnlyData[frame] = frameWeights[17] * 10.0; // 10倍极限放大！
+          if (jawOnlyData[frame] > 1.0) {
+            jawOnlyData[frame] = 1.0;
+          }
+        }
+      }
+
+      final mouthMorphData = MorphAnimationData(jawOnlyData, [
+        "T.jawOpen",
+      ], frameLengthInMs: frameLengthMs);
+
+      debugPrint('🚀 首先设置Mouth_Mod (T.jawOpen 10倍极限增强！)');
+      await _asset!.setMorphAnimationData(
+        mouthMorphData,
+        targetMeshNames: ["Mouth_Mod"],
+      );
+      debugPrint('✅ Mouth_Mod设置完成');
+
+      // 小延迟让Mouth_Mod先激活
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // 🎯 步骤3：设置Head_Mod
+      debugPrint('🚀 然后设置Head_Mod (所有bs.json数据5倍放大！)');
+
+      // 简化Head_Mod数据：只包含关键的口型相关blendshapes
+      final keyMorphNames = [
+        "F.jawOpen",
+        "F.mouthClose",
+        "F.mouthFunnel",
+        "F.mouthPucker",
+      ];
+      final keyMorphData = Float32List(totalFrames * keyMorphNames.length);
+
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = _blendshapeData![frame];
+        final baseIndex = frame * keyMorphNames.length;
+
+        // F.jawOpen: 来自bs.json索引25 (jawOpen) - 也要放大
+        if (frameWeights.length > 25) {
+          final enhancedJawOpen = frameWeights[25] * 5.0; // 5倍增强上颌
+          keyMorphData[baseIndex + 0] = enhancedJawOpen > 1.0
+              ? 1.0
+              : enhancedJawOpen;
+        }
+
+        // F.mouthClose: 来自bs.json索引26 - 放大
+        if (frameWeights.length > 26) {
+          final enhanced = frameWeights[26] * 5.0; // 5倍放大
+          keyMorphData[baseIndex + 1] = enhanced > 1.0 ? 1.0 : enhanced;
+        }
+
+        // F.mouthFunnel: 来自bs.json索引27 - 放大
+        if (frameWeights.length > 27) {
+          final enhanced = frameWeights[27] * 5.0; // 5倍放大
+          keyMorphData[baseIndex + 2] = enhanced > 1.0 ? 1.0 : enhanced;
+        }
+
+        // F.mouthPucker: 来自bs.json索引28 - 放大
+        if (frameWeights.length > 28) {
+          final enhanced = frameWeights[28] * 5.0; // 5倍放大
+          keyMorphData[baseIndex + 3] = enhanced > 1.0 ? 1.0 : enhanced;
+        }
+      }
+
+      final headMorphData = MorphAnimationData(
+        keyMorphData,
+        keyMorphNames,
+        frameLengthInMs: frameLengthMs,
+      );
+
+      await _asset!.setMorphAnimationData(
+        headMorphData,
+        targetMeshNames: ["Head_Mod"],
+      );
+      debugPrint('✅ Head_Mod设置完成');
+
+      debugPrint('🎉 分离方法完成：Head_Mod + Mouth_Mod应该同时工作');
+      setState(() => _status = '🎯 分离方法：双实体同步');
+
+      // 🔍 验证Mouth_Mod是否响应 - 尝试手动设置权重
+      await Future.delayed(Duration(milliseconds: 500));
+      debugPrint('🔍 正在验证Mouth_Mod是否响应T.jawOpen...');
+
+      // 🎯 直接测试：手动设置T.jawOpen权重
+      debugPrint('🧪 尝试直接设置T.jawOpen权重到1.0...');
+      final childEntities = await _asset!.getChildEntities();
+
+      for (int i = 0; i < childEntities.length; i++) {
+        final entity = childEntities[i];
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+
+        if (entityName == "Mouth_Mod") {
+          debugPrint('🎯 找到Mouth_Mod实体，检查实际的morph targets...');
+
+          // 🔍 首先检查Mouth_Mod实际有哪些morph targets
+          final actualMorphTargets = await _asset!.getMorphTargetNames(
+            entity: entity,
+          );
+          debugPrint('📋 Mouth_Mod实际的morph targets: $actualMorphTargets');
+
+          if (actualMorphTargets.isNotEmpty) {
+            debugPrint('🧪 极限测试T.jawOpen动作（多次设置）');
+            try {
+              // 🎯 极限测试：多次大幅度变化
+              for (int test = 0; test < 3; test++) {
+                debugPrint('🔥 第${test + 1}轮测试：T.jawOpen 1.0');
+                await _asset!.setMorphTargetWeights(entity, [1.0]);
+                setState(() => _status = '🔥 T.jawOpen权重1.0 (第${test + 1}轮)');
+                await Future.delayed(Duration(milliseconds: 1500));
+
+                debugPrint('🔥 第${test + 1}轮测试：T.jawOpen 0.0');
+                await _asset!.setMorphTargetWeights(entity, [0.0]);
+                setState(() => _status = '🔥 T.jawOpen权重0.0 (第${test + 1}轮)');
+                await Future.delayed(Duration(milliseconds: 1500));
+              }
+
+              debugPrint('🎯 极限测试完成：如果还是看不到牙齿动作，说明T.jawOpen在thermion中效果极微弱');
+
+              // 如果有多个morph targets，也测试一下
+              if (actualMorphTargets.length > 1) {
+                debugPrint(
+                  '📋 Mouth_Mod总共有${actualMorphTargets.length}个morph targets',
+                );
+                for (int j = 0; j < actualMorphTargets.length; j++) {
+                  debugPrint('   [$j]: ${actualMorphTargets[j]}');
+                }
+              }
+            } catch (e) {
+              debugPrint('❌ 设置Mouth_Mod权重失败: $e');
+            }
+          } else {
+            debugPrint('❌ Mouth_Mod没有任何morph targets！');
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ 分离方法失败: $e');
+      setState(() => _status = '❌ 分离方法失败: $e');
+    }
+  }
+
   /// 🚀 核心革命性方法：将bs.json数据直接分配给动画轨道
   /// 这是技术突破的关键：统一身体动画和面部动画管线
   Future<void> _assignBsJsonToAnimationTrack() async {
@@ -518,14 +1071,14 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
                 );
 
                 // 🎯 特别检查关键blendshape
-                final hasF_jawOpen = morphTargets.contains('F.jawOpen');
-                final hasT_jawOpen = morphTargets.contains('T.jawOpen');
-                final hasF_eyeBlink = morphTargets.contains('F.eyeBlinkLeft');
+                final hasFJawOpen = morphTargets.contains('F.jawOpen');
+                final hasTJawOpen = morphTargets.contains('T.jawOpen');
+                final hasFEyeBlink = morphTargets.contains('F.eyeBlinkLeft');
 
                 debugPrint('🔍 实体 $entityIndex 关键blendshape:');
-                debugPrint('   F.jawOpen: $hasF_jawOpen');
-                debugPrint('   T.jawOpen: $hasT_jawOpen');
-                debugPrint('   F.eyeBlinkLeft: $hasF_eyeBlink');
+                debugPrint('   F.jawOpen: $hasFJawOpen');
+                debugPrint('   T.jawOpen: $hasTJawOpen');
+                debugPrint('   F.eyeBlinkLeft: $hasFEyeBlink');
 
                 // 🎯 标识实体用途
                 if (entityIndex == 1) {
@@ -556,7 +1109,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       // 1. 🎯 获取实体12的实际blendshape名称（精确映射）
       final childEntities = await _asset!.getChildEntities();
       List<String> entity12MorphTargets = [];
-      
+
       if (childEntities.length > 12) {
         try {
           entity12MorphTargets = await _asset!.getMorphTargetNames(
@@ -574,38 +1127,85 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
 
       // 2. 🎯 bs.json标准ARKit顺序（55个权重）
       final bsJsonBlendshapeNames = [
-        "eyeBlinkLeft", "eyeLookDownLeft", "eyeLookInLeft", "eyeLookOutLeft", "eyeLookUpLeft",
-        "eyeSquintLeft", "eyeWideLeft", "eyeBlinkRight", "eyeLookDownRight", "eyeLookInRight",
-        "eyeLookOutRight", "eyeLookUpRight", "eyeSquintRight", "eyeWideRight", "jawForward",
-        "jawLeft", "jawRight", "jawOpen", "mouthClose", "mouthFunnel",
-        "mouthPucker", "mouthLeft", "mouthRight", "mouthSmileLeft", "mouthSmileRight",
-        "mouthFrownLeft", "mouthFrownRight", "mouthDimpleLeft", "mouthDimpleRight", "mouthStretchLeft",
-        "mouthStretchRight", "mouthRollLower", "mouthRollUpper", "mouthShrugLower", "mouthShrugUpper",
-        "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight", "mouthUpperUpLeft",
-        "mouthUpperUpRight", "browDownLeft", "browDownRight", "browInnerUp", "browOuterUpLeft",
-        "browOuterUpRight", "cheekPuff", "cheekSquintLeft", "cheekSquintRight", "noseSneerLeft",
-        "noseSneerRight", "tongueOut", "unused52", "unused53", "unused54"
+        "eyeBlinkLeft",
+        "eyeLookDownLeft",
+        "eyeLookInLeft",
+        "eyeLookOutLeft",
+        "eyeLookUpLeft",
+        "eyeSquintLeft",
+        "eyeWideLeft",
+        "eyeBlinkRight",
+        "eyeLookDownRight",
+        "eyeLookInRight",
+        "eyeLookOutRight",
+        "eyeLookUpRight",
+        "eyeSquintRight",
+        "eyeWideRight",
+        "jawForward",
+        "jawLeft",
+        "jawRight",
+        "jawOpen",
+        "mouthClose",
+        "mouthFunnel",
+        "mouthPucker",
+        "mouthLeft",
+        "mouthRight",
+        "mouthSmileLeft",
+        "mouthSmileRight",
+        "mouthFrownLeft",
+        "mouthFrownRight",
+        "mouthDimpleLeft",
+        "mouthDimpleRight",
+        "mouthStretchLeft",
+        "mouthStretchRight",
+        "mouthRollLower",
+        "mouthRollUpper",
+        "mouthShrugLower",
+        "mouthShrugUpper",
+        "mouthPressLeft",
+        "mouthPressRight",
+        "mouthLowerDownLeft",
+        "mouthLowerDownRight",
+        "mouthUpperUpLeft",
+        "mouthUpperUpRight",
+        "browDownLeft",
+        "browDownRight",
+        "browInnerUp",
+        "browOuterUpLeft",
+        "browOuterUpRight",
+        "cheekPuff",
+        "cheekSquintLeft",
+        "cheekSquintRight",
+        "noseSneerLeft",
+        "noseSneerRight",
+        "tongueOut",
+        "unused52",
+        "unused53",
+        "unused54",
       ];
 
       // 3. 🎯 创建精确映射：实体12 blendshape -> bs.json索引
       final List<int> bsToEntity12Mapping = [];
       final List<String> mappedMorphTargetNames = [];
-      
+
       for (int i = 0; i < entity12MorphTargets.length; i++) {
         final entity12Name = entity12MorphTargets[i];
         int bsJsonIndex = -1;
-        
+
         // 尝试匹配F.前缀的名称
         if (entity12Name.startsWith('F.')) {
           final baseName = entity12Name.substring(2); // 移除F.前缀
           bsJsonIndex = bsJsonBlendshapeNames.indexOf(baseName);
         }
-        
+
         if (bsJsonIndex != -1) {
           bsToEntity12Mapping.add(bsJsonIndex);
           mappedMorphTargetNames.add(entity12Name);
-          if (kDebugMode && i < 5) { // 只打印前5个避免日志过长
-            debugPrint('   映射: bs.json[$bsJsonIndex](${bsJsonBlendshapeNames[bsJsonIndex]}) -> 实体12[$i]($entity12Name)');
+          if (kDebugMode && i < 5) {
+            // 只打印前5个避免日志过长
+            debugPrint(
+              '   映射: bs.json[$bsJsonIndex](${bsJsonBlendshapeNames[bsJsonIndex]}) -> 实体12[$i]($entity12Name)',
+            );
           }
         } else {
           if (kDebugMode) {
@@ -619,7 +1219,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         debugPrint('   bs.json总数: ${bsJsonBlendshapeNames.length}');
         debugPrint('   实体12总数: ${entity12MorphTargets.length}');
         debugPrint('   成功映射: ${bsToEntity12Mapping.length}');
-        debugPrint('   F.jawOpen映射: bs.json[${bsToEntity12Mapping.contains(17) ? 17 : '未找到'}] -> 实体12');
+        debugPrint(
+          '   F.jawOpen映射: bs.json[${bsToEntity12Mapping.contains(17) ? 17 : '未找到'}] -> 实体12',
+        );
       }
 
       // 4. 🎯 根据映射创建精确的数据（只包含实际存在的blendshape）
@@ -630,7 +1232,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       for (int frame = 0; frame < totalFrames; frame++) {
         final frameWeights = _blendshapeData![frame];
         final baseIndex = frame * mappedWeightsPerFrame;
-        
+
         for (int i = 0; i < bsToEntity12Mapping.length; i++) {
           final bsJsonIndex = bsToEntity12Mapping[i];
           if (bsJsonIndex < frameWeights.length) {
@@ -648,126 +1250,280 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         );
       }
 
-      // 3. 🎯 计算正确的帧时长：音频约59.16秒，1775帧
+      // 3. 🎯 简化测试：使用固定1秒单帧
+      // final audioDurationMs = 59160.0; // 音频时长毫秒
+      // final frameLengthMs = audioDurationMs / totalFrames; // 约33.3ms每帧
+
+      // 🎯 优化方案：分别创建专属数据，单次调用
+      if (kDebugMode) {
+        debugPrint('🎯 开始优化分离策略...');
+        debugPrint('   为Head_Mod创建F前缀专属数据');
+        debugPrint('   为Mouth_Mod创建T.jawOpen专属数据');
+        debugPrint('   单次调用setMorphAnimationData，让thermion分别处理');
+      }
+
+      // 🎯 恢复动态多帧数据：牙齿张开需要动态效果才能看到
+      debugPrint('🎯 使用完整bs.json数据，保持简化的API调用');
+
+      // 计算30FPS帧时长
       final audioDurationMs = 59160.0; // 音频时长毫秒
       final frameLengthMs = audioDurationMs / totalFrames; // 约33.3ms每帧
 
-      // 🎯 革命性分离映射方案：F前缀→Head_Mod，T.jawOpen→Mouth_Mod
-      if (kDebugMode) {
-        debugPrint('🎯 开始分离映射策略...');
-        debugPrint('   F前缀${mappedWeightsPerFrame}个 → Head_Mod');
-        debugPrint('   T.jawOpen → Mouth_Mod');
-        debugPrint('   分别调用setMorphAnimationData，精确目标映射');
-      }
-
-      // 🎯 步骤1：创建Head_Mod专用数据（F前缀）
       final headMorphData = MorphAnimationData(
-        mappedFlatData, // 精确映射的F前缀数据
-        mappedMorphTargetNames, // 精确映射的F前缀名称
+        mappedFlatData, // 完整的F前缀数据
+        mappedMorphTargetNames,
         frameLengthInMs: frameLengthMs,
       );
 
-      // 🎯 步骤2：创建Mouth_Mod专用数据（T.jawOpen）
-      final jawOnlyData = Float32List(totalFrames); // 只有1个权重
+      // 为Mouth_Mod创建T.jawOpen动态数据
+      final jawOnlyData = Float32List(totalFrames);
       for (int frame = 0; frame < totalFrames; frame++) {
         final frameWeights = _blendshapeData![frame];
         if (frameWeights.length > 17) {
-          jawOnlyData[frame] = frameWeights[17]; // bs.json第17个索引
+          // 适度增强权重，避免过度放大
+          jawOnlyData[frame] = frameWeights[17] * 2.0; // 2倍增强
+          if (jawOnlyData[frame] > 1.0) {
+            jawOnlyData[frame] = 1.0;
+          }
         }
       }
 
       final mouthMorphData = MorphAnimationData(
-        jawOnlyData, // T.jawOpen数据
-        ["T.jawOpen"], // 只有T.jawOpen
+        jawOnlyData, // 完整的T.jawOpen动态数据
+        ["T.jawOpen"],
         frameLengthInMs: frameLengthMs,
       );
 
-      if (kDebugMode) {
-        debugPrint('🎯 分离数据创建完成:');
-        debugPrint('   Head_Mod数据: ${mappedWeightsPerFrame}个F前缀 (${mappedFlatData.length}字节)');
-        debugPrint('   Mouth_Mod数据: 1个T.jawOpen (${jawOnlyData.length}字节)');
-        
-        // 查找F.jawOpen在映射中的位置
-        int fJawOpenIndex = -1;
-        for (int i = 0; i < mappedMorphTargetNames.length; i++) {
-          if (mappedMorphTargetNames[i] == 'F.jawOpen') {
-            fJawOpenIndex = i;
-            break;
+      // 🎯 步骤3：创建包含所有数据的统一结构（用于统一调用）
+      // 注意：这里创建一个包含所有morph targets的列表，让thermion自动分配
+      final allMorphTargetNames = <String>[];
+      allMorphTargetNames.addAll(mappedMorphTargetNames); // F前缀
+      allMorphTargetNames.add("T.jawOpen"); // T.jawOpen
+
+      // 创建包含所有数据的扁平数组
+      final allWeightsPerFrame = mappedWeightsPerFrame + 1;
+      final allFlatData = Float32List(totalFrames * allWeightsPerFrame);
+
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = _blendshapeData![frame];
+        final baseIndex = frame * allWeightsPerFrame;
+
+        // 复制F前缀数据
+        for (int i = 0; i < bsToEntity12Mapping.length; i++) {
+          final bsJsonIndex = bsToEntity12Mapping[i];
+          if (bsJsonIndex < frameWeights.length) {
+            allFlatData[baseIndex + i] = frameWeights[bsJsonIndex];
           }
         }
-        
-        debugPrint('   F.jawOpen位置: Head_Mod索引$fJawOpenIndex (来自bs.json第17个)');
-        debugPrint('   T.jawOpen位置: Mouth_Mod索引0 (来自bs.json第17个)');
-        
-        // 验证T.jawOpen数据
-        final tJawOpenRange = '${jawOnlyData.reduce((a, b) => a < b ? a : b).toStringAsFixed(4)} - ${jawOnlyData.reduce((a, b) => a > b ? a : b).toStringAsFixed(4)}';
-        final tJawOpenNonZero = jawOnlyData.where((v) => v > 0.001).length;
-        debugPrint('   T.jawOpen数据范围: $tJawOpenRange');
-        debugPrint('   T.jawOpen非零帧: $tJawOpenNonZero/$totalFrames');
-        
-        // 验证F.jawOpen数据（如果存在）
-        if (fJawOpenIndex != -1) {
-          final fJawOpenValues = <double>[];
-          for (int frame = 0; frame < totalFrames; frame++) {
-            fJawOpenValues.add(mappedFlatData[frame * mappedWeightsPerFrame + fJawOpenIndex]);
+
+        // 添加增强的T.jawOpen数据（3倍增强）
+        if (frameWeights.length > 17) {
+          allFlatData[baseIndex + mappedWeightsPerFrame] =
+              frameWeights[17] * 3.0;
+          if (allFlatData[baseIndex + mappedWeightsPerFrame] > 1.0) {
+            allFlatData[baseIndex + mappedWeightsPerFrame] = 1.0;
           }
-          final fJawOpenRange = '${fJawOpenValues.reduce((a, b) => a < b ? a : b).toStringAsFixed(4)} - ${fJawOpenValues.reduce((a, b) => a > b ? a : b).toStringAsFixed(4)}';
-          final fJawOpenNonZero = fJawOpenValues.where((v) => v > 0.001).length;
-          debugPrint('   F.jawOpen数据范围: $fJawOpenRange');
-          debugPrint('   F.jawOpen非零帧: $fJawOpenNonZero/$totalFrames');
         }
       }
 
-      // 🎯 步骤3：添加动画组件（关键！）
-      try {
-        await _asset!.addAnimationComponent();
-        if (kDebugMode) debugPrint('✅ 动画组件已添加');
-      } catch (e) {
-        if (kDebugMode) debugPrint('❌ 添加动画组件失败: $e');
+      // unifiedMorphData已移除，直接使用分离的headMorphData和mouthMorphData
+
+      // 查找F.jawOpen在映射中的位置（移到外部，供后面使用）
+      int fJawOpenIndex = -1;
+      for (int i = 0; i < mappedMorphTargetNames.length; i++) {
+        if (mappedMorphTargetNames[i] == 'F.jawOpen') {
+          fJawOpenIndex = i;
+          break;
+        }
       }
 
-      // 🎯 步骤4：分离分配 - F前缀到Head_Mod
-      bool headSuccess = false;
-      try {
-        await _asset!.setMorphAnimationData(
-          headMorphData,
-          targetMeshNames: ["Head_Mod"],
-        );
-        headSuccess = true;
-        if (kDebugMode) debugPrint('✅ Head_Mod F前缀分配成功');
-      } catch (e) {
-        if (kDebugMode) debugPrint('❌ Head_Mod F前缀分配失败: $e');
-      }
-
-      // 🎯 步骤5：分离分配 - T.jawOpen到Mouth_Mod
-      bool mouthSuccess = false;
-      try {
-        await _asset!.setMorphAnimationData(
-          mouthMorphData,
-          targetMeshNames: ["Mouth_Mod"],
-        );
-        mouthSuccess = true;
-        if (kDebugMode) debugPrint('✅ Mouth_Mod T.jawOpen分配成功');
-      } catch (e) {
-        if (kDebugMode) debugPrint('❌ Mouth_Mod T.jawOpen分配失败: $e');
-      }
-
-      // 🎯 步骤6：验证分离分配结果
       if (kDebugMode) {
-        debugPrint('🎯 分离分配结果:');
-        debugPrint('   Head_Mod (F前缀): $headSuccess');
-        debugPrint('   Mouth_Mod (T.jawOpen): $mouthSuccess');
+        debugPrint('🎯 动态数据创建完成:');
+        debugPrint('   Head_Mod: ${mappedMorphTargetNames.length}个F前缀');
+        debugPrint('   Mouth_Mod: 1个T.jawOpen（2倍增强）');
 
-        if (headSuccess && mouthSuccess) {
-          debugPrint('🎉 革命性双重jawOpen系统已建立（分离映射）:');
-          debugPrint('   精确映射: bs.json(55个) -> Head_Mod(${mappedWeightsPerFrame}个F前缀) + Mouth_Mod(1个T.jawOpen)');
-          debugPrint('   F.jawOpen → Head_Mod精确位置 (上颌/嘴唇控制)');
-          debugPrint('   T.jawOpen → Mouth_Mod索引0 (下颌/牙齿控制)');
-          debugPrint('   数据来源: 都来自bs.json第17个索引');
-          debugPrint('   技术优势: 精确目标映射 + 避免网格冲突');
-          debugPrint('   预期效果: 完整协调的张嘴动作');
+        // 验证动态数据
+        final jawRange =
+            '${jawOnlyData.reduce((a, b) => a < b ? a : b).toStringAsFixed(4)} - ${jawOnlyData.reduce((a, b) => a > b ? a : b).toStringAsFixed(4)}';
+        final jawNonZero = jawOnlyData.where((v) => v > 0.001).length;
+        debugPrint('   T.jawOpen范围: $jawRange');
+        debugPrint('   T.jawOpen非零帧: $jawNonZero/$totalFrames');
+        debugPrint(
+          '   帧率: 30 FPS ($totalFrames帧/${(audioDurationMs / 1000).toStringAsFixed(1)}秒)',
+        );
+
+        debugPrint('   统一数据: ${allMorphTargetNames.length}个blendshape');
+        debugPrint('   F.jawOpen位置: 索引$fJawOpenIndex');
+        debugPrint('   T.jawOpen位置: 索引$mappedWeightsPerFrame');
+      }
+
+      // 🎯 步骤4：添加MorphAnimationComponent和激活动画组件
+      String? actualHeadMeshName;
+      String? actualMouthMeshName;
+      try {
+        debugPrint('🎯 添加MorphAnimationComponent到口型控制实体...');
+
+        final childEntities = await _asset!.getChildEntities();
+        ThermionEntity? headModEntity;
+        ThermionEntity? mouthModEntity;
+
+        // 🔍 查找实际的实体12和实体13对应的mesh名称
+        for (int i = 0; i < childEntities.length; i++) {
+          final entity = childEntities[i];
+          final entityName = FilamentApp.instance!.getNameForEntity(entity);
+
+          try {
+            final morphTargets = await _asset!.getMorphTargetNames(
+              entity: entity,
+            );
+
+            // 查找包含F.jawOpen的实体（实体12）
+            if (morphTargets.contains('F.jawOpen')) {
+              headModEntity = entity;
+              actualHeadMeshName = entityName;
+              debugPrint('🎯 找到F.jawOpen实体: "$entityName"');
+            }
+
+            // 查找包含T.jawOpen的实体（实体13）
+            if (morphTargets.contains('T.jawOpen')) {
+              mouthModEntity = entity;
+              actualMouthMeshName = entityName;
+              debugPrint('🎯 找到T.jawOpen实体: "$entityName"');
+            }
+          } catch (e) {
+            // 忽略没有morph targets的实体
+          }
+        }
+
+        if (headModEntity != null && mouthModEntity != null) {
+          final ffiAsset = _asset! as dynamic;
+          final animationManager = ffiAsset.animationManager;
+
+          AnimationManager_addMorphAnimationComponent(
+            animationManager,
+            headModEntity,
+          );
+          AnimationManager_addMorphAnimationComponent(
+            animationManager,
+            mouthModEntity,
+          );
+          debugPrint('✅ MorphAnimationComponent已添加到两个实体');
+          debugPrint('   F.jawOpen实体mesh名称: "$actualHeadMeshName"');
+          debugPrint('   T.jawOpen实体mesh名称: "$actualMouthMeshName"');
+
+          // 🚀 关键：为每个实体单独激活动画系统
+          debugPrint('🎯 尝试为每个mesh单独激活动画组件...');
+
+          // 方法1：先为asset全局激活
+          await _asset!.addAnimationComponent();
+          debugPrint('✅ asset级别addAnimationComponent()已调用');
+
+          // 方法2：验证每个实体的animation component状态
+          debugPrint('🔍 验证各实体的animation component状态...');
+
+          // 🎯 尝试仅为Mouth_Mod设置动画，测试其独立工作能力
+          debugPrint('🚧 测试：仅激活Mouth_Mod动画组件...');
+          try {
+            // 为Mouth_Mod创建简化测试数据（固定权重1.0）
+            final testMouthData = MorphAnimationData(
+              Float32List.fromList([1.0]), // 单帧固定权重
+              ["T.jawOpen"],
+              frameLengthInMs: 1000.0, // 1秒持续
+            );
+
+            debugPrint('🎯 仅为Mouth_Mod设置动画数据测试...');
+            await _asset!.setMorphAnimationData(
+              testMouthData,
+              targetMeshNames: [actualMouthMeshName!],
+            );
+            debugPrint('✅ Mouth_Mod独立动画测试数据已设置');
+
+            // 给thermion一点时间处理
+            await Future.delayed(Duration(milliseconds: 100));
+
+            // 验证T.jawOpen是否可以手动设置权重
+            debugPrint('🔍 验证T.jawOpen手动权重设置...');
+            try {
+              await _asset!.setMorphTargetWeights(mouthModEntity, [0.8]);
+              debugPrint('✅ T.jawOpen手动权重0.8已设置');
+
+              await Future.delayed(Duration(milliseconds: 200));
+
+              await _asset!.setMorphTargetWeights(mouthModEntity, [0.0]);
+              debugPrint('✅ T.jawOpen手动权重0.0已设置');
+            } catch (e) {
+              debugPrint('❌ T.jawOpen手动权重设置失败: $e');
+            }
+
+            debugPrint('🔍 Mouth_Mod独立测试完成，检查牙齿是否移动...');
+          } catch (e) {
+            debugPrint('❌ Mouth_Mod独立测试失败: $e');
+          }
+        }
+      } catch (e) {
+        debugPrint('❌ MorphAnimationComponent设置失败: $e');
+      }
+
+      // 🎯 步骤5：直接使用策略2（分别设置Head_Mod和Mouth_Mod）
+      // 跳过策略1，因为XiaoMeng_Body没有morph targets，全局分配会失败
+      bool success = false;
+      String strategy = "";
+
+      // 直接使用分离设置策略（使用动态获取的mesh名称）
+      try {
+        if (actualHeadMeshName != null && actualMouthMeshName != null) {
+          if (kDebugMode) debugPrint('🎯 设置F.jawOpen实体（$actualHeadMeshName）');
+          await _asset!.setMorphAnimationData(
+            headMorphData,
+            targetMeshNames: [actualHeadMeshName],
+          );
+
+          // 等待一小段时间确保第一次设置完成
+          await Future.delayed(const Duration(milliseconds: 50));
+
+          // 然后为T.jawOpen实体设置数据
+          if (kDebugMode) debugPrint('🎯 设置T.jawOpen实体（$actualMouthMeshName）');
+          await _asset!.setMorphAnimationData(
+            mouthMorphData,
+            targetMeshNames: [actualMouthMeshName],
+          );
         } else {
-          debugPrint('⚠️ 部分分配失败，可能影响口型效果');
+          throw Exception('无法找到F.jawOpen或T.jawOpen对应的实体mesh名称');
+        }
+
+        success = true;
+        strategy = "分离设置$actualHeadMeshName+$actualMouthMeshName";
+        if (kDebugMode) debugPrint('✅ morph动画数据设置成功：使用实际mesh名称');
+      } catch (e) {
+        if (kDebugMode) debugPrint('❌ morph动画数据设置失败: $e');
+      }
+
+      // 🎯 步骤6：验证调用结果
+      if (kDebugMode) {
+        debugPrint('🎯 调用结果:');
+        debugPrint('   成功: $success');
+        debugPrint('   策略: $strategy');
+
+        if (success) {
+          debugPrint('🎉 动态morph动画已建立:');
+          debugPrint('   使用策略: $strategy');
+          debugPrint('   模式: 完整bs.json数据');
+          debugPrint('   T.jawOpen: 2倍增强，动态播放');
+          debugPrint('   预期效果: Head_Mod张嘴 + Mouth_Mod牙齿协调动作');
+
+          // 🎯 关键：调用render()激活morph动画（参考thermion测试代码）
+          try {
+            debugPrint('🎯 调用viewer.render()激活morph动画...');
+            await _viewer!.render();
+            debugPrint('✅ render调用完成，morph动画应已激活');
+          } catch (e) {
+            debugPrint('❌ render调用失败: $e');
+          }
+
+          // 🔧 通过setState触发widget重建，间接触发渲染
+          setState(() => _status = '✅ morph动画轨道已设置，等待激活...');
+        } else {
+          debugPrint('❌ 所有策略都失败，需要进一步诊断');
         }
       }
 
@@ -776,7 +1532,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       if (kDebugMode) {
         debugPrint('🎯 革命性双实体方案完成！');
         debugPrint(
-          '   实体12: F前缀blendshapes (${mappedWeightsPerFrame}个) 包含F.jawOpen',
+          '   实体12: F前缀blendshapes ($mappedWeightsPerFrame个) 包含F.jawOpen',
         );
         debugPrint('   实体13: T.jawOpen专用 (bs.json第17个数据)');
         debugPrint('   双重jawOpen: F.jawOpen + T.jawOpen 同步驱动');
@@ -785,6 +1541,12 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       }
 
       setState(() => _status = '🚀 革命性动画轨道已配置');
+
+      // 🔍 添加Mouth_Mod专项验证
+      await _verifyMouthModSetup();
+
+      // 🎯 显式启动morph动画播放
+      await _startMorphAnimationPlayback();
     } catch (e) {
       if (kDebugMode) {
         debugPrint('❌ 革命性方案失败: $e');
@@ -793,86 +1555,156 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
-  /// 🦷 为Mouth_Mod创建专门的jawOpen动画轨道
-  /// 实现Head_Mod + Mouth_Mod协同控制
-  Future<void> _createMouthModJawOpenAnimation() async {
-    if (_blendshapeData == null) return;
+  /// 🔍 专项验证Mouth_Mod设置状态
+  Future<void> _verifyMouthModSetup() async {
+    if (_asset == null) return;
 
     try {
-      // 1. 提取第17个jawOpen值（所有帧）
-      final totalFrames = _blendshapeData!.length;
-      final jawOpenData = Float32List(totalFrames); // 只有一个值
+      if (kDebugMode) debugPrint('🔍 开始Mouth_Mod专项验证...');
 
-      for (int frame = 0; frame < totalFrames; frame++) {
-        final frameWeights = _blendshapeData![frame];
-        if (frameWeights.length > 17) {
-          jawOpenData[frame] = frameWeights[17]; // 第17个是jawOpen
+      final childEntities = await _asset!.getChildEntities();
+
+      // 查找Mouth_Mod实体
+      ThermionEntity? mouthModEntity;
+      for (int i = 0; i < childEntities.length; i++) {
+        final entityName = FilamentApp.instance!.getNameForEntity(
+          childEntities[i],
+        );
+        if (entityName == "Mouth_Mod") {
+          mouthModEntity = childEntities[i];
+          break;
         }
       }
 
-      // 2. 创建Mouth_Mod专用的动画轨道
-      final audioDurationMs = 59160.0; // 与主动画同步
-      final frameLengthMs = audioDurationMs / totalFrames;
+      if (mouthModEntity != null) {
+        if (kDebugMode) debugPrint('✅ 找到Mouth_Mod实体');
 
-      final mouthMorphData = MorphAnimationData(
-        jawOpenData, // 只有jawOpen数据
-        ["T.jawOpen"], // Mouth_Mod的jawOpen目标
-        frameLengthInMs: frameLengthMs, // 精确时间同步
-      );
+        // 检查Mouth_Mod的morph targets
+        try {
+          final morphTargets = await _asset!.getMorphTargetNames(
+            entity: mouthModEntity,
+          );
+          if (kDebugMode) {
+            debugPrint('🔍 Mouth_Mod morph targets: ${morphTargets.length}个');
+            debugPrint('   内容: ${morphTargets.join(', ')}');
+          }
 
-      // 3. 分配jawOpen动画到支持的网格
-      if (kDebugMode) {
-        debugPrint('🦷 开始分配jawOpen专用动画轨道');
-      }
+          // 检查是否包含T.jawOpen
+          final hasTJawOpen = morphTargets.contains('T.jawOpen');
+          if (kDebugMode) {
+            debugPrint('🔍 Mouth_Mod支持T.jawOpen: $hasTJawOpen');
+          }
 
-      // 尝试不指定targetMeshNames，让系统自动分配jawOpen到支持的网格
-      try {
-        await _asset!.setMorphAnimationData(mouthMorphData);
-        if (kDebugMode) debugPrint('✅ jawOpen动画轨道全局设置成功');
-      } catch (e) {
-        if (kDebugMode) debugPrint('❌ jawOpen动画轨道全局设置失败: $e');
+          if (hasTJawOpen) {
+            // 测试手动设置T.jawOpen权重
+            if (kDebugMode) debugPrint('🧪 测试手动设置T.jawOpen权重...');
 
-        // 如果全局设置失败，尝试一些可能包含T.jawOpen的网格名称
-        final possibleJawMeshNames = [
-          "Mouth_Mod",
-          "mouth",
-          "Mouth",
-          "jaw",
-          "Jaw",
-          "Head_Mod",
-          "head",
-          "Head",
-          "face",
-          "Face",
-        ];
+            // 设置一个明显的权重值进行测试
+            try {
+              await _asset!.setMorphTargetWeights(mouthModEntity, [
+                0.8,
+              ]); // 80%张开
+              if (kDebugMode) debugPrint('✅ 手动设置T.jawOpen权重成功');
 
-        for (final meshName in possibleJawMeshNames) {
-          try {
-            await _asset!.setMorphAnimationData(
-              mouthMorphData,
-              targetMeshNames: [meshName],
-            );
-            if (kDebugMode) debugPrint('✅ jawOpen动画轨道设置成功: $meshName');
-            break;
-          } catch (e2) {
-            if (kDebugMode) debugPrint('❌ 尝试jawOpen到 $meshName 失败: $e2');
+              // 等待2秒让用户看到效果
+              await Future.delayed(const Duration(seconds: 2));
+
+              // 重置权重
+              await _asset!.setMorphTargetWeights(mouthModEntity, [0.0]);
+              if (kDebugMode) debugPrint('✅ 重置T.jawOpen权重完成');
+            } catch (e) {
+              if (kDebugMode) debugPrint('❌ 手动设置T.jawOpen权重失败: $e');
+            }
+          } else {
+            if (kDebugMode) debugPrint('❌ Mouth_Mod不包含T.jawOpen！');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('❌ 获取Mouth_Mod morph targets失败: $e');
+        }
+      } else {
+        if (kDebugMode) debugPrint('❌ 未找到Mouth_Mod实体！');
+
+        // 列出所有实体名称以帮助调试
+        if (kDebugMode) {
+          debugPrint('🔍 可用实体列表:');
+          for (int i = 0; i < childEntities.length; i++) {
+            try {
+              final entityName = FilamentApp.instance!.getNameForEntity(
+                childEntities[i],
+              );
+              debugPrint('   实体$i: $entityName');
+            } catch (_) {
+              debugPrint('   实体$i: 无法获取名称');
+            }
           }
         }
       }
-
-      if (kDebugMode) {
-        debugPrint('🦷 jawOpen动画轨道创建成功');
-        debugPrint('   数据: bs.json第17个值 ($totalFrames帧)');
-        debugPrint('   目标: T.jawOpen');
-        debugPrint(
-          '   数据范围: ${jawOpenData.reduce((a, b) => a < b ? a : b).toStringAsFixed(4)} - ${jawOpenData.reduce((a, b) => a > b ? a : b).toStringAsFixed(4)}',
-        );
-        debugPrint('   非零帧数: ${jawOpenData.where((v) => v > 0.001).length}');
-      }
     } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ Mouth_Mod动画轨道创建失败: $e');
+      if (kDebugMode) debugPrint('❌ Mouth_Mod验证失败: $e');
+    }
+  }
+
+  /// 🎯 显式启动morph动画播放
+  Future<void> _startMorphAnimationPlayback() async {
+    if (_asset == null) return;
+
+    try {
+      if (kDebugMode) debugPrint('🎯 开始启动morph动画播放...');
+
+      // 尝试查找是否有morph动画播放的API
+      // 根据thermion文档，setMorphAnimationData后应该自动播放
+      // 但我们可以尝试一些可能的启动方法
+
+      final childEntities = await _asset!.getChildEntities();
+
+      // 查找Head_Mod和Mouth_Mod实体
+      ThermionEntity? headModEntity;
+      ThermionEntity? mouthModEntity;
+
+      for (final entity in childEntities) {
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+        if (entityName == "Head_Mod") {
+          headModEntity = entity;
+        } else if (entityName == "Mouth_Mod") {
+          mouthModEntity = entity;
+        }
       }
+
+      if (headModEntity != null && mouthModEntity != null) {
+        if (kDebugMode) {
+          debugPrint('✅ 找到Head_Mod和Mouth_Mod实体');
+          debugPrint('🎯 MorphAnimationComponent已在数据设置阶段添加，无需重复添加');
+
+          // 测试Mouth_Mod是否响应权重设置
+          try {
+            debugPrint('🧪 测试Mouth_Mod响应性...');
+
+            // 🔥 极限测试：设置T.jawOpen=1.0观察最大效果
+            debugPrint('🔥 极限测试：设置T.jawOpen=1.0');
+            await _asset!.setMorphTargetWeights(mouthModEntity, [1.0]);
+            await Future.delayed(const Duration(milliseconds: 1500)); // 延长观察时间
+
+            // 设置一个中等权重测试
+            debugPrint('🧪 中等测试：设置T.jawOpen=0.5');
+            await _asset!.setMorphTargetWeights(mouthModEntity, [0.5]);
+            await Future.delayed(const Duration(milliseconds: 1000));
+
+            // 重置权重
+            debugPrint('🔄 重置T.jawOpen=0.0');
+            await _asset!.setMorphTargetWeights(mouthModEntity, [0.0]);
+
+            debugPrint('✅ Mouth_Mod极限测试完成');
+          } catch (e) {
+            if (kDebugMode) debugPrint('❌ Mouth_Mod权重设置失败: $e');
+          }
+        }
+      } else {
+        if (kDebugMode) debugPrint('❌ 未找到Head_Mod或Mouth_Mod实体');
+      }
+
+      if (kDebugMode) debugPrint('✅ morph动画播放检查完成');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ morph动画播放启动失败: $e');
     }
   }
 
@@ -897,19 +1729,18 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
         if (kDebugMode) debugPrint('⚠️ 停止动画失败: $e');
       }
 
-      // 🔄 步骤2：清除现有morph数据
-      final childEntities = await _asset!.getChildEntities();
-      for (int i = 0; i < childEntities.length; i++) {
-        try {
-          await _asset!.clearMorphAnimationData(childEntities[i]);
-        } catch (_) {
-          // 忽略清理错误
-        }
-      }
-      if (kDebugMode) debugPrint('✅ 现有morph数据已清除');
+      // 🔄 步骤2：检查是否需要清除现有morph数据
+      // 如果之前已经设置了正确的数据，就不要清除
+      if (kDebugMode) debugPrint('🎯 跳过清除morph数据，保持已设置的动画轨道');
 
       // 🎯 步骤3：设置新的morph数据（使用我们的分离分配策略）
-      await _assignBsJsonToAnimationTrack();
+      if (!_isMorphAnimationConfigured) {
+        await _assignBsJsonToAnimationTrack();
+        _isMorphAnimationConfigured = true;
+        if (kDebugMode) debugPrint('✅ morph动画轨道已配置，后续播放将重用');
+      } else {
+        if (kDebugMode) debugPrint('🎯 重用已配置的morph动画轨道');
+      }
 
       // ⏱️ 步骤4：等待一帧，确保morph数据设置完成
       await Future.delayed(const Duration(milliseconds: 50));
@@ -948,165 +1779,9 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     }
   }
 
-  // 🎭 原始统一动画播放方法（保留作为备用）
-  Future<void> _playUnifiedAnimation() async {
-    if (_asset == null) return;
-
-    try {
-      setState(() => _status = '🎭 启动统一动画系统...');
-
-      if (kDebugMode) {
-        debugPrint('🎭 开始统一动画播放：身体动画 + 面部动画轨道');
-      }
-
-      // 1. 清除现有的morph动画数据
-      final childEntities = await _asset!.getChildEntities();
-      for (int i = 0; i < childEntities.length; i++) {
-        try {
-          await _asset!.clearMorphAnimationData(childEntities[i]);
-        } catch (_) {
-          // 忽略清理错误
-        }
-      }
-
-      // 2. 分配bs.json数据到动画轨道
-      await _assignBsJsonToAnimationTrack();
-
-      // 3. 🚫 禁用身体动画（纯口型测试模式）
-      // if (_selectedTalkAnimation >= 0 &&
-      //     _selectedTalkAnimation < _animations.length) {
-      //   await _asset!.playGltfAnimation(_selectedTalkAnimation, loop: true);
-      //   _isPlaying = true;
-      //   _currentAnimationIndex = _selectedTalkAnimation;
-
-      //   if (kDebugMode) {
-      //     debugPrint('✅ 身体动画已启动：${_animations[_selectedTalkAnimation]}');
-      //     debugPrint('   建模师已清除面部数据，无冲突');
-      //   }
-      // }
-
-      if (kDebugMode) {
-        debugPrint('🚫 身体动画已禁用（纯口型测试模式）');
-      }
-
-      // 4. 现在面部动画由bs.json轨道控制，无需权重覆盖！
-
-      setState(() => _status = '🚀 统一动画系统运行中');
-
-      if (kDebugMode) {
-        debugPrint('🎉 革命性成功！统一动画管线已建立：');
-        debugPrint('   ✓ 身体动作：由骨骼动画控制');
-        debugPrint('   ✓ 面部表情：由bs.json动画轨道控制');
-        debugPrint('   ✓ 无冲突运行：分层控制各司其职');
-        debugPrint('   ✓ 简化流程：无需复杂权重覆盖逻辑');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ 统一动画播放失败: $e');
-      }
-      setState(() => _status = '❌ 统一动画失败: $e');
-    }
-  }
-
-  // 检测idle动画
-  void _detectIdleAnimation(List<String> animationNames) {
-    // 查找包含idle关键词的动画
-    const idleKeywords = [
-      'idle',
-      'Idle',
-      'IDLE',
-      'wait',
-      'Wait',
-      'stand',
-      'Stand',
-    ];
-
-    for (int i = 0; i < animationNames.length; i++) {
-      final name = animationNames[i].toLowerCase();
-      for (final keyword in idleKeywords) {
-        if (name.contains(keyword.toLowerCase())) {
-          _idleAnimationIndex = i;
-          if (kDebugMode) {
-            debugPrint('🎯 找到idle动画: ${animationNames[i]} (索引: $i)');
-          }
-          return;
-        }
-      }
-    }
-
-    // 如果没找到idle动画，使用第一个动画作为idle
-    if (animationNames.isNotEmpty) {
-      _idleAnimationIndex = 0;
-      if (kDebugMode) {
-        debugPrint('⚠️ 未找到idle关键词，使用第一个动画作为idle: ${animationNames[0]}');
-      }
-    }
-  }
-
   // ===== 动画管理系统 =====
 
-  /// 开始播放idle动画
-  Future<void> _startIdleAnimation() async {
-    if (_asset == null || _idleAnimationIndex == -1) return;
-
-    try {
-      setState(() => _status = '🎭 启动idle动画...');
-
-      if (kDebugMode) {
-        debugPrint('🎭 开始播放idle动画 (索引: $_idleAnimationIndex)');
-      }
-
-      // 🚫 禁用idle动画（纯口型测试模式）
-      // await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
-      // _isPlaying = true;
-      // _currentAnimationIndex = _idleAnimationIndex;
-
-      if (kDebugMode) {
-        debugPrint('🚫 Idle动画已禁用（纯口型测试模式）');
-      }
-
-      setState(() => _status = '✅ 口型同步系统准备就绪');
-
-      if (kDebugMode) {
-        debugPrint('✅ Idle动画播放成功');
-        debugPrint('   当前播放状态: $_isPlaying');
-        debugPrint('   当前动画索引: $_currentAnimationIndex');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ Idle动画播放失败: $e');
-      }
-      setState(() => _status = '⚠️ Idle动画播放失败，但系统可用');
-    }
-  }
-
-  // 恢复idle动画播放
-  Future<void> _resumeIdleAnimation() async {
-    if (_asset == null || _idleAnimationIndex == -1) return;
-
-    try {
-      if (kDebugMode) {
-        debugPrint('🔄 恢复idle动画播放');
-      }
-
-      // 🚫 禁用idle动画恢复（纯口型测试模式）
-      // await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
-      // _isPlaying = true;
-      // _currentAnimationIndex = _idleAnimationIndex;
-
-      if (kDebugMode) {
-        debugPrint('🚫 Idle动画恢复已禁用（纯口型测试模式）');
-      }
-
-      if (kDebugMode) {
-        debugPrint('✅ Idle动画已恢复');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('❌ 恢复idle动画失败: $e');
-      }
-    }
-  }
+  // ===== 简化测试：移除复杂的动画更新循环 =====
 
   // ===== 播放控制系统 =====
 
@@ -1154,6 +1829,14 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       // 🎵 开始播放音频（动画轨道会自动同步）
       await _audioPlayer.play(AssetSource('wav/output.wav'));
 
+      // 🎯 暂时移除可能导致崩溃的更新循环，让Thermion自动处理
+      // _startAnimationUpdateLoop();
+
+      // 🎯 触发widget重建，确保morph动画与音频同步启动
+      setState(() => _status = '🎵 音频播放中，口型同步激活...');
+
+      if (kDebugMode) debugPrint('✅ 音频播放已启动，morph动画应自动同步');
+
       // 🎯 分离分配策略已完成，无需额外测试
 
       if (kDebugMode) {
@@ -1178,6 +1861,8 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
     try {
       _isLipSyncPlaying = false;
 
+      // 🛑 简化测试：无需手动停止动画更新循环
+
       // 停止音频
       await _audioPlayer.stop();
 
@@ -1185,17 +1870,19 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       _positionSubscription?.cancel();
       _completeSubscription?.cancel();
 
-      // 🔄 清除morph动画轨道数据
-      if (_asset != null) {
-        final childEntities = await _asset!.getChildEntities();
-        for (int i = 0; i < childEntities.length; i++) {
-          try {
-            await _asset!.clearMorphAnimationData(childEntities[i]);
-          } catch (_) {
-            // 忽略清理错误
-          }
-        }
-      }
+      // 🔄 暂时注释清除morph动画轨道数据，保持Mouth_Mod动画状态
+      // if (_asset != null) {
+      //   final childEntities = await _asset!.getChildEntities();
+      //   for (int i = 0; i < childEntities.length; i++) {
+      //     try {
+      //       await _asset!.clearMorphAnimationData(childEntities[i]);
+      //     } catch (_) {
+      //       // 忽略清理错误
+      //     }
+      //   }
+      // }
+
+      if (kDebugMode) debugPrint('🎯 保持morph动画轨道数据，不清除Mouth_Mod状态');
 
       // 🎭 纯口型测试模式：不恢复idle动画
       // await _resumeIdleAnimation();
@@ -1206,7 +1893,7 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
       if (kDebugMode) {
         debugPrint('⏹️ 纯口型测试系统已停止');
         debugPrint('   ✓ 音频播放已停止');
-        debugPrint('   ✓ morph动画轨道已清除');
+        debugPrint('   ✓ morph动画轨道已保持（未清除）');
         debugPrint('   ✓ 保持静止状态（身体动画已禁用）');
       }
     } catch (e) {
@@ -1474,7 +2161,105 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
               ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
+
+          // 添加实体检查按钮
+          Center(
+            child: ElevatedButton.icon(
+              onPressed: _asset != null ? _checkAllEntities : null,
+              icon: const Icon(Icons.info, size: 14),
+              label: const Text('检查GLB实体信息', style: TextStyle(fontSize: 12)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // 手动滑块控制两个实体的jawOpen - 更好的位置
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey.shade300),
+              borderRadius: BorderRadius.circular(8),
+              color: Colors.white,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '手动控制jawOpen',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+
+                // Head_Mod F.jawOpen 滑块
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 85,
+                      child: Text('Head_Mod:', style: TextStyle(fontSize: 13)),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: _headJawOpenValue,
+                        min: 0.0,
+                        max: 1.0,
+                        divisions: 100,
+                        label: _headJawOpenValue.toStringAsFixed(2),
+                        onChanged: _asset != null
+                            ? (value) => _setHeadJawOpen(value)
+                            : null,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 45,
+                      child: Text(
+                        _headJawOpenValue.toStringAsFixed(2),
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+
+                // Mouth_Mod T.jawOpen 滑块
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 85,
+                      child: Text('Mouth_Mod:', style: TextStyle(fontSize: 13)),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: _mouthJawOpenValue,
+                        min: 0.0,
+                        max: 1.0,
+                        divisions: 100,
+                        label: _mouthJawOpenValue.toStringAsFixed(2),
+                        onChanged: _asset != null
+                            ? (value) => _setMouthJawOpen(value)
+                            : null,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 45,
+                      child: Text(
+                        _mouthJawOpenValue.toStringAsFixed(2),
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+
           // 状态指示器
           _isLipSyncPlaying
               ? Row(
@@ -1571,6 +2356,8 @@ class _SimpleThermionTestState extends State<SimpleThermionTest>
   void dispose() {
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
+
+    // 🛑 简化测试：无需清理动画更新循环
 
     // 清理音频资源
     _positionSubscription?.cancel();
