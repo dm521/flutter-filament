@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -58,6 +59,8 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
   // ===== 音频和BS数据系统 =====
   List<List<double>>? _blendshapeData;
   bool _isBlendshapeLoaded = false;
+  List<List<double>>? _testBlendshapeData;
+  bool _isTestDataLoaded = false;
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isLipSyncPlaying = false;
   StreamSubscription<void>? _completeSubscription;
@@ -302,6 +305,473 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
   }
 
+  /// 🛑 强制停止所有动画和音频
+  Future<void> _forceStopAll() async {
+    try {
+      if (kDebugMode) debugPrint('🛑 强制停止所有动画...');
+
+      // 1. 强制停止音频
+      await _audioPlayer.stop();
+
+      // 2. 停止所有GLTF动画
+      if (_asset != null && _animations.isNotEmpty) {
+        for (int i = 0; i < _animations.length; i++) {
+          try {
+            await _asset!.stopGltfAnimation(i);
+          } catch (e) {
+            if (kDebugMode) debugPrint('⚠️ 停止动画$i失败: $e');
+          }
+        }
+      }
+
+      // 3. 🎯 强制停止morph动画（使用正确的API！）
+      if (_asset != null && _headEntity != null) {
+        try {
+          // 使用Thermion的官方API清除morph动画
+          await _asset!.clearMorphAnimationData(_headEntity!);
+          if (kDebugMode) debugPrint('🛑 强制清除morph动画完成');
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ 强制清除morph动画失败: $e');
+        }
+      }
+
+      // 4. 重置状态
+      _isLipSyncPlaying = false;
+      _completeSubscription?.cancel();
+
+      // 5. 重置morph targets
+      await _resetAllMorphTargets();
+
+      setState(() => _status = '🛑 强制停止完成');
+      if (kDebugMode) debugPrint('🛑 强制停止完成');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ 强制停止失败: $e');
+    }
+  }
+
+  /// 🔍 诊断形变问题 - 专门分析形变原因
+  Future<void> _diagnoseDeformationIssues() async {
+    if (_headEntity == null || _blendshapeData == null) return;
+
+    try {
+      setState(() => _status = '🔍 诊断形变问题...');
+
+      final headMorphNames = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+      final bsToHeadMapping = _createBSMapping(headMorphNames);
+
+      if (kDebugMode) {
+        debugPrint('🔍 ===== 形变问题诊断报告 =====');
+
+        // 1. 检查数据范围异常
+        debugPrint('📊 数据范围分析:');
+        final problematicMorphs = <String, Map<String, dynamic>>{};
+
+        for (final entry in bsToHeadMapping.entries) {
+          final morphName = entry.key;
+          final bsIndex = entry.value;
+
+          double maxValue = 0.0;
+          double minValue = 0.0;
+          int extremeFrames = 0; // 超过1.0的帧数
+          int negativeFrames = 0; // 负值帧数
+
+          for (final frame in _blendshapeData!) {
+            if (bsIndex < frame.length) {
+              final value = frame[bsIndex];
+              if (value > maxValue) maxValue = value;
+              if (value < minValue) minValue = value;
+              if (value > 1.0) extremeFrames++;
+              if (value < 0.0) negativeFrames++;
+            }
+          }
+
+          // 标记问题数据
+          if (maxValue > 1.0 || minValue < -0.1 || extremeFrames > 0) {
+            problematicMorphs[morphName] = {
+              'maxValue': maxValue,
+              'minValue': minValue,
+              'extremeFrames': extremeFrames,
+              'negativeFrames': negativeFrames,
+              'bsIndex': bsIndex,
+            };
+          }
+        }
+
+        if (problematicMorphs.isNotEmpty) {
+          debugPrint('⚠️  发现${problematicMorphs.length}个异常morph targets:');
+          for (final entry in problematicMorphs.entries) {
+            final name = entry.key;
+            final data = entry.value;
+            debugPrint('   🔥 $name (索引${data['bsIndex']}):');
+            debugPrint(
+              '      范围: ${data['minValue'].toStringAsFixed(3)} ~ ${data['maxValue'].toStringAsFixed(3)}',
+            );
+            if (data['extremeFrames'] > 0) {
+              debugPrint('      ⚠️  超过1.0的帧数: ${data['extremeFrames']}');
+            }
+            if (data['negativeFrames'] > 0) {
+              debugPrint('      ⚠️  负值帧数: ${data['negativeFrames']}');
+            }
+          }
+        } else {
+          debugPrint('✅ 所有morph targets数据范围正常');
+        }
+
+        // 2. 检查增强系数是否过度
+        debugPrint('\n🎛️  当前增强系数分析:');
+        debugPrint('   张嘴增强系数: $_jawOpenEnhanceFactor (建议: 1.0-1.3)');
+        debugPrint('   嘴型增强系数: $_mouthShapeEnhanceFactor (建议: 1.0-1.2)');
+        debugPrint('   平滑系数: $_smoothingFactor (建议: 0.1-0.3)');
+        debugPrint('   最大权重限制: $_maxMorphWeight (建议: 0.8-1.0)');
+
+        if (_jawOpenEnhanceFactor > 1.5) {
+          debugPrint('   ⚠️  张嘴增强过度，可能导致下颌形变');
+        }
+        if (_mouthShapeEnhanceFactor > 1.3) {
+          debugPrint('   ⚠️  嘴型增强过度，可能导致嘴部形变');
+        }
+
+        // 3. 检查关键帧的权重分布
+        debugPrint('\n📈 关键帧权重分布分析:');
+        final keyIndices = [
+          17,
+          19,
+          20,
+          23,
+          24,
+        ]; // jawOpen, mouthFunnel, mouthPucker, smileLeft, smileRight
+        final keyNames = [
+          'jawOpen',
+          'mouthFunnel',
+          'mouthPucker',
+          'smileLeft',
+          'smileRight',
+        ];
+
+        for (int i = 0; i < keyIndices.length; i++) {
+          final index = keyIndices[i];
+          final name = keyNames[i];
+
+          if (index < _blendshapeData!.first.length) {
+            final values = _blendshapeData!
+                .map((frame) => frame[index])
+                .toList();
+            values.sort();
+
+            final p25 = values[(values.length * 0.25).floor()];
+            final p50 = values[(values.length * 0.5).floor()];
+            final p75 = values[(values.length * 0.75).floor()];
+            final p95 = values[(values.length * 0.95).floor()];
+
+            debugPrint(
+              '   📊 $name: P25=${p25.toStringAsFixed(3)}, P50=${p50.toStringAsFixed(3)}, P75=${p75.toStringAsFixed(3)}, P95=${p95.toStringAsFixed(3)}',
+            );
+
+            if (p95 > 1.2) {
+              debugPrint('      🔥 95%分位数过高，可能导致极端形变');
+            }
+            if (p75 > 0.8) {
+              debugPrint('      ⚠️  75%分位数偏高，整体权重可能过大');
+            }
+          }
+        }
+
+        // 4. 提供修复建议
+        debugPrint('\n💡 形变问题修复建议:');
+        debugPrint('   1. 数据预处理:');
+        debugPrint('      - 将所有权重限制在0.0-0.8范围内');
+        debugPrint('      - 对超过1.0的值进行截断处理');
+        debugPrint('      - 增加数据平滑处理');
+
+        debugPrint('   2. 增强系数调整:');
+        debugPrint('      - 降低jawOpenEnhanceFactor到1.2');
+        debugPrint('      - 降低mouthShapeEnhanceFactor到1.1');
+        debugPrint('      - 增加smoothingFactor到0.25');
+
+        debugPrint('   3. 特定morph targets处理:');
+        if (problematicMorphs.containsKey('F.mouthSmileLeft') ||
+            problematicMorphs.containsKey('F.mouthSmileRight')) {
+          debugPrint('      - 微笑表情权重过高，建议限制在0.6以内');
+        }
+        if (problematicMorphs.containsKey('F.jawOpen')) {
+          debugPrint('      - 张嘴权重异常，检查BS数据源');
+        }
+
+        debugPrint('🔍 ===== 诊断完成 =====');
+      }
+
+      setState(() => _status = '✅ 形变诊断完成');
+    } catch (e) {
+      setState(() => _status = '❌ 诊断失败: $e');
+      if (kDebugMode) debugPrint('❌ 形变诊断失败: $e');
+    }
+  }
+
+  /// 🔍 检查数据对齐 - 专门的诊断函数
+  Future<void> _checkDataAlignment() async {
+    if (_headEntity == null || _blendshapeData == null) return;
+
+    try {
+      setState(() => _status = '🔍 检查数据对齐...');
+
+      final headMorphNames = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+      final bsToHeadMapping = _createBSMapping(headMorphNames);
+
+      if (kDebugMode) {
+        debugPrint('🔍 ===== 数据对齐诊断报告 =====');
+        debugPrint('模型信息:');
+        debugPrint('   Head_Mod morph targets: ${headMorphNames.length}个');
+        debugPrint('   成功映射: ${bsToHeadMapping.length}个');
+
+        debugPrint('BS数据信息:');
+        debugPrint('   数据长度: ${_blendshapeData!.first.length}个');
+        debugPrint('   总帧数: ${_blendshapeData!.length}帧');
+
+        // 检查关键morph targets是否存在
+        const keyMorphs = [
+          'F.jawOpen',
+          'F.mouthFunnel',
+          'F.mouthPucker',
+          'F.mouthSmileLeft',
+          'F.mouthSmileRight',
+        ];
+
+        debugPrint('关键morph targets检查:');
+        for (final morph in keyMorphs) {
+          if (headMorphNames.contains(morph)) {
+            final bsIndex = bsToHeadMapping[morph];
+            debugPrint('   ✅ $morph -> BS索引$bsIndex');
+          } else {
+            debugPrint('   ❌ $morph -> 模型中不存在');
+          }
+        }
+
+        // 分析BS数据中最活跃的索引
+        _findMostActiveIndices();
+
+        // 如果数据长度不匹配，给出建议
+        if (_blendshapeData!.first.length != 52) {
+          debugPrint('⚠️  数据长度建议:');
+          debugPrint('   当前: ${_blendshapeData!.first.length}个');
+          debugPrint('   标准: 52个');
+          if (_blendshapeData!.first.length == 55) {
+            debugPrint('   建议: 可能需要忽略前3个或后3个数据');
+          }
+        }
+
+        debugPrint('🔍 ===== 诊断报告结束 =====');
+      }
+
+      setState(() => _status = '✅ 数据对齐检查完成');
+    } catch (e) {
+      setState(() => _status = '❌ 检查失败: $e');
+      if (kDebugMode) debugPrint('❌ 数据对齐检查失败: $e');
+    }
+  }
+
+  /// 🔍 找出最活跃的BS数据索引
+  void _findMostActiveIndices() {
+    if (_blendshapeData == null) return;
+
+    final activityMap = <int, double>{};
+    final dataLength = _blendshapeData!.first.length;
+
+    // 计算每个索引的活跃度
+    for (int index = 0; index < dataLength; index++) {
+      double totalActivity = 0.0;
+      for (final frame in _blendshapeData!) {
+        totalActivity += frame[index].abs();
+      }
+      activityMap[index] = totalActivity;
+    }
+
+    // 排序找出最活跃的索引
+    final sortedIndices = activityMap.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    if (kDebugMode) {
+      debugPrint('📊 最活跃的BS数据索引 (前10个):');
+      for (int i = 0; i < 10 && i < sortedIndices.length; i++) {
+        final entry = sortedIndices[i];
+        debugPrint('   索引${entry.key}: 活跃度${entry.value.toStringAsFixed(2)}');
+      }
+
+      // 特别检查关键口型索引的活跃度
+      const keyIndices = [
+        25,
+        27,
+        28,
+        31,
+        32,
+      ]; // jawOpen, mouthFunnel, mouthPucker, mouthSmileLeft, mouthSmileRight
+      const keyNames = [
+        'jawOpen',
+        'mouthFunnel',
+        'mouthPucker',
+        'mouthSmileLeft',
+        'mouthSmileRight',
+      ];
+
+      debugPrint('🔍 关键口型索引活跃度:');
+      for (int i = 0; i < keyIndices.length; i++) {
+        final index = keyIndices[i];
+        final name = keyNames[i];
+        if (index < dataLength) {
+          final activity = activityMap[index] ?? 0.0;
+          debugPrint('   $name(索引$index): 活跃度${activity.toStringAsFixed(2)}');
+        } else {
+          debugPrint('   $name(索引$index): 超出数据范围');
+        }
+      }
+    }
+  }
+
+  /// 🧪 全面测试所有morph targets的数据对齐和质量
+  Future<void> _testMapping() async {
+    if (_headEntity == null || _blendshapeData == null) return;
+
+    try {
+      setState(() => _status = '🧪 全面测试映射...');
+
+      final headMorphNames = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+      final bsToHeadMapping = _createBSMapping(headMorphNames);
+
+      if (kDebugMode) {
+        debugPrint('🧪 ===== 完整数据对齐分析 =====');
+        debugPrint('📊 基础信息:');
+        debugPrint('   模型morph targets: ${headMorphNames.length}个');
+        debugPrint('   BS数据长度: ${_blendshapeData!.first.length}个');
+        debugPrint('   成功映射: ${bsToHeadMapping.length}个');
+        debugPrint('   总帧数: ${_blendshapeData!.length}帧');
+
+        // 分析所有映射的morph targets
+        final sortedMorphs = bsToHeadMapping.entries.toList()
+          ..sort((a, b) => a.value.compareTo(b.value));
+
+        debugPrint('\n📋 完整映射分析 (按BS索引排序):');
+
+        // 统计数据
+        int normalCount = 0;
+        int lowActivityCount = 0;
+        int highValueCount = 0;
+        int suspiciousCount = 0;
+
+        for (final entry in sortedMorphs) {
+          final morphName = entry.key;
+          final bsIndex = entry.value;
+
+          // 分析这个morph target的数据
+          double maxValue = 0.0;
+          double minValue = double.infinity;
+          double avgValue = 0.0;
+          int activeFrames = 0;
+          double totalValue = 0.0;
+
+          for (final frame in _blendshapeData!) {
+            if (bsIndex < frame.length) {
+              final value = frame[bsIndex];
+              if (value > maxValue) maxValue = value;
+              if (value < minValue) minValue = value;
+              totalValue += value;
+              if (value > 0.05) activeFrames++;
+            }
+          }
+
+          avgValue = totalValue / _blendshapeData!.length;
+          final activityRate = (activeFrames / _blendshapeData!.length * 100);
+
+          // 分类统计
+          if (maxValue > 1.0) highValueCount++;
+          if (activityRate < 5.0) lowActivityCount++;
+          if (maxValue > 1.5 || activityRate > 95.0)
+            suspiciousCount++;
+          else
+            normalCount++;
+
+          // 标记异常数据
+          String status = '✅';
+          if (maxValue > 1.2) status = '⚠️ 高值';
+          if (maxValue > 1.5) status = '🔥 异常高';
+          if (activityRate < 2.0) status = '💤 低活跃';
+          if (activityRate > 98.0) status = '🔄 过活跃';
+
+          debugPrint('   [$bsIndex] $morphName:');
+          debugPrint(
+            '      最大值: ${maxValue.toStringAsFixed(3)} | 平均值: ${avgValue.toStringAsFixed(3)}',
+          );
+          debugPrint(
+            '      活跃率: ${activityRate.toStringAsFixed(1)}% (${activeFrames}帧) $status',
+          );
+        }
+
+        debugPrint('\n📊 数据质量统计:');
+        debugPrint('   ✅ 正常数据: $normalCount个');
+        debugPrint('   💤 低活跃度: $lowActivityCount个');
+        debugPrint('   ⚠️  高数值: $highValueCount个');
+        debugPrint('   🔥 可疑数据: $suspiciousCount个');
+
+        // 重点分析口型相关的morph targets
+        debugPrint('\n🎯 口型关键分析:');
+        const keyMorphs = [
+          'F.jawOpen',
+          'F.mouthFunnel',
+          'F.mouthPucker',
+          'F.mouthSmileLeft',
+          'F.mouthSmileRight',
+          'F.mouthClose',
+          'F.mouthLeft',
+          'F.mouthRight',
+        ];
+
+        for (final morphName in keyMorphs) {
+          if (bsToHeadMapping.containsKey(morphName)) {
+            final bsIndex = bsToHeadMapping[morphName]!;
+            double maxValue = 0.0;
+            int activeFrames = 0;
+
+            for (final frame in _blendshapeData!) {
+              if (bsIndex < frame.length) {
+                final value = frame[bsIndex];
+                if (value > maxValue) maxValue = value;
+                if (value > 0.05) activeFrames++;
+              }
+            }
+
+            final activityRate = (activeFrames / _blendshapeData!.length * 100);
+            String recommendation = '';
+
+            if (morphName == 'F.jawOpen' && maxValue < 0.5) {
+              recommendation = ' → 建议增强张嘴幅度';
+            } else if (morphName.contains('Smile') && maxValue > 0.8) {
+              recommendation = ' → 建议降低微笑强度，避免过度表情';
+            } else if (activityRate > 90) {
+              recommendation = ' → 活跃度过高，可能导致不自然';
+            } else if (activityRate < 10) {
+              recommendation = ' → 活跃度过低，口型变化不明显';
+            }
+
+            debugPrint(
+              '   🎯 $morphName: 最大${maxValue.toStringAsFixed(3)}, 活跃${activityRate.toStringAsFixed(1)}%$recommendation',
+            );
+          }
+        }
+
+        debugPrint('🧪 ===== 分析完成 =====');
+      }
+
+      setState(() => _status = '✅ 全面测试完成');
+    } catch (e) {
+      setState(() => _status = '❌ 测试失败: $e');
+      if (kDebugMode) debugPrint('❌ 映射测试失败: $e');
+    }
+  }
+
   /// 加载动画列表
   Future<void> _loadAnimations() async {
     try {
@@ -373,7 +843,90 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
   }
 
-  /// 播放口型同步 - 优化版本
+  /// 分析测试数据的分布
+  void _analyzeTestData() {
+    if (_testBlendshapeData == null) return;
+
+    if (kDebugMode) {
+      debugPrint('🔍 ===== 测试数据分析 =====');
+
+      // 统计每个索引的数据情况
+      final dataLength = _testBlendshapeData!.first.length;
+      final totalFrames = _testBlendshapeData!.length;
+
+      for (int index = 0; index < dataLength; index++) {
+        double maxValue = 0.0;
+        double minValue = double.infinity;
+        int nonZeroFrames = 0;
+        Set<double> uniqueValues = {};
+
+        for (int frame = 0; frame < totalFrames; frame++) {
+          final value = _testBlendshapeData![frame][index];
+          if (value > 0.001) {
+            nonZeroFrames++;
+            uniqueValues.add(value);
+          }
+          if (value > maxValue) maxValue = value;
+          if (value < minValue) minValue = value;
+        }
+
+        if (nonZeroFrames > 0) {
+          debugPrint(
+            '📊 索引$index: 非零帧$nonZeroFrames/$totalFrames, 最大值${maxValue.toStringAsFixed(3)}, 唯一值${uniqueValues.length}个',
+          );
+          if (uniqueValues.length <= 5) {
+            debugPrint(
+              '   值: ${uniqueValues.map((v) => v.toStringAsFixed(3)).join(', ')}',
+            );
+          }
+        }
+      }
+
+      debugPrint('🔍 ===== 分析完成 =====');
+    }
+  }
+
+  /// 加载测试BS数据
+  Future<void> _loadTestBlendshapeData() async {
+    try {
+      setState(() => _status = '加载测试数据...');
+
+      final jsonString = await rootBundle.loadString('assets/wav/bs.json');
+      final Map<String, dynamic> jsonData = json.decode(jsonString);
+
+      final int numFrames = jsonData['numFrames'];
+      final List<dynamic> weightMat = jsonData['weightMat'];
+
+      _testBlendshapeData = weightMat
+          .map(
+            (frame) =>
+                List<double>.from(frame.map((value) => value.toDouble())),
+          )
+          .toList();
+
+      _isTestDataLoaded = true;
+
+      if (kDebugMode) {
+        debugPrint('✅ 测试数据加载成功: ${_testBlendshapeData!.length}帧');
+        debugPrint('   预期帧数: $numFrames');
+        debugPrint('   实际帧数: ${_testBlendshapeData!.length}');
+        debugPrint('   每帧数据长度: ${_testBlendshapeData!.first.length}');
+
+        // 分析数据分布
+        _analyzeTestData();
+      }
+
+      setState(() => _status = '✅ 测试数据加载完成');
+    } catch (e) {
+      _isTestDataLoaded = false;
+      setState(() => _status = '❌ 测试数据加载失败: $e');
+      if (kDebugMode) {
+        debugPrint('❌ 加载测试数据失败: $e');
+      }
+    }
+  }
+
+  /// 播放口型同步 - 优化版本（改进同步）
   Future<void> _playLipSync() async {
     if (!_isBlendshapeLoaded || _blendshapeData == null) {
       return;
@@ -384,11 +937,82 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
 
     try {
-      setState(() => _status = '🎬 准备播放(优化版)...');
+      setState(() => _status = '🎬 准备播放...');
       _isLipSyncPlaying = true;
 
-      // 设置动画数据
-      await _setupMorphAnimation();
+      // 🎯 获取音频文件的实际长度
+      final audioSource = AssetSource('wav/output.wav');
+
+      // 预加载音频以获取时长
+      await _audioPlayer.setSource(audioSource);
+      final audioDuration = await _audioPlayer.getDuration();
+
+      if (audioDuration == null) {
+        throw Exception('无法获取音频时长');
+      }
+
+      final actualAudioLengthMs = audioDuration.inMilliseconds.toDouble();
+
+      if (kDebugMode) {
+        debugPrint('🎵 音频同步信息:');
+        debugPrint(
+          '   音频实际长度: ${actualAudioLengthMs}ms (${(actualAudioLengthMs / 1000).toStringAsFixed(2)}秒)',
+        );
+        debugPrint('   BS数据帧数: ${_blendshapeData!.length}');
+        debugPrint(
+          '   计算帧率: ${(_blendshapeData!.length * 1000 / actualAudioLengthMs).toStringAsFixed(2)}fps',
+        );
+      }
+
+      // 🎯 使用实际音频长度设置动画数据
+      await _setupMorphAnimationWithDuration(actualAudioLengthMs);
+
+      // 设置音频播放完成监听
+      _completeSubscription?.cancel();
+      _completeSubscription = _audioPlayer.onPlayerComplete.listen((_) async {
+        await _stopLipSync();
+      });
+
+      // 🎯 同步启动：先启动动画，立即播放音频
+      if (_talk01AnimationIndex >= 0) {
+        await _asset!.playGltfAnimation(_talk01AnimationIndex);
+        if (kDebugMode) debugPrint('🎭 启动talk_01动画');
+      }
+
+      // 立即播放音频，减少延迟
+      await _audioPlayer.play(audioSource);
+      setState(() => _status = '🎬 正在播放 (同步优化)...');
+
+      if (kDebugMode) {
+        debugPrint('✅ 音频和口型动画已同步启动');
+      }
+    } catch (e) {
+      _isLipSyncPlaying = false;
+      setState(() => _status = '❌ 播放失败: $e');
+      if (kDebugMode) {
+        debugPrint('❌ 播放失败: $e');
+      }
+    }
+  }
+
+  /// 播放测试JSON数据 - 纯BS数据测试
+  Future<void> _playTestData() async {
+    if (!_isTestDataLoaded || _testBlendshapeData == null) {
+      // 如果测试数据未加载，先加载
+      await _loadTestBlendshapeData();
+      if (!_isTestDataLoaded) return;
+    }
+
+    if (_isLipSyncPlaying) {
+      await _stopLipSync();
+    }
+
+    try {
+      setState(() => _status = '🧪 播放测试数据...');
+      _isLipSyncPlaying = true;
+
+      // 设置测试动画数据
+      await _setupTestMorphAnimation();
 
       // 🎭 启动talk_01动画
       if (_talk01AnimationIndex >= 0) {
@@ -398,20 +1022,33 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
         }
       }
 
-      // 设置音频播放完成监听
-      _completeSubscription?.cancel();
-      _completeSubscription = _audioPlayer.onPlayerComplete.listen((_) async {
-        await _stopLipSync();
-      });
+      // 不播放音频，只播放morph动画
+      setState(
+        () => _status = '🧪 测试数据播放中 (${_testBlendshapeData!.length}帧)...',
+      );
 
-      // 开始播放音频
-      await _audioPlayer.play(AssetSource('wav/output.wav'));
-      setState(() => _status = '🎬 正在播放(优化版)...');
+      // 计算播放时长并设置定时器
+      final totalDurationMs = _testBlendshapeData!.length * 33.0; // 30fps
+      final durationSeconds = (totalDurationMs / 1000).toStringAsFixed(1);
+
+      if (kDebugMode) {
+        debugPrint('🧪 开始播放测试数据:');
+        debugPrint('   总帧数: ${_testBlendshapeData!.length}');
+        debugPrint('   播放时长: ${durationSeconds}秒');
+        debugPrint('   帧率: 30fps');
+      }
+
+      Timer(Duration(milliseconds: totalDurationMs.toInt()), () async {
+        if (_isLipSyncPlaying) {
+          await _stopLipSync();
+          if (kDebugMode) debugPrint('🧪 测试数据播放完成');
+        }
+      });
     } catch (e) {
       _isLipSyncPlaying = false;
-      setState(() => _status = '❌ 播放失败: $e');
+      setState(() => _status = '❌ 测试播放失败: $e');
       if (kDebugMode) {
-        debugPrint('❌ 播放失败: $e');
+        debugPrint('❌ 测试播放失败: $e');
       }
     }
   }
@@ -459,16 +1096,17 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
   }
 
-  /// 停止口型同步
+  /// 停止口型同步 - 完整版本
   Future<void> _stopLipSync() async {
     try {
       _isLipSyncPlaying = false;
       setState(() => _status = '⏹️ 停止播放...');
 
-      // 停止音频
+      // 1. 停止音频
       await _audioPlayer.stop();
+      if (kDebugMode) debugPrint('🔇 音频已停止');
 
-      // 🎭 停止talk_01动画
+      // 2. 🎭 停止talk_01动画
       if (_talk01AnimationIndex >= 0) {
         await _asset!.stopGltfAnimation(_talk01AnimationIndex);
         if (kDebugMode) {
@@ -476,13 +1114,25 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
         }
       }
 
-      // 取消监听
+      // 3. 🎯 停止morph动画（使用正确的API！）
+      try {
+        if (_asset != null && _headEntity != null) {
+          // 使用Thermion的官方API清除morph动画
+          await _asset!.clearMorphAnimationData(_headEntity!);
+          if (kDebugMode) debugPrint('🎯 已清除morph动画数据');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ 清除morph动画失败: $e');
+      }
+
+      // 4. 取消监听
       _completeSubscription?.cancel();
 
-      // 重置所有morph targets到默认状态
+      // 5. 重置所有morph targets到默认状态
       await _resetAllMorphTargets();
 
-      setState(() => _status = '✅ 已停止');
+      setState(() => _status = '✅ 已完全停止');
+      if (kDebugMode) debugPrint('✅ 口型同步完全停止');
     } catch (e) {
       setState(() => _status = '❌ 停止失败: $e');
       if (kDebugMode) {
@@ -522,6 +1172,19 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
       final totalMorphTargets = mappedMorphNames.length;
       final flatData = Float32List(totalFrames * totalMorphTargets);
 
+      // 检查数据长度匹配
+      final dataLength = _blendshapeData!.first.length;
+      if (kDebugMode) {
+        debugPrint('🔍 原始播放数据检查:');
+        debugPrint('   BS数据长度: $dataLength');
+        debugPrint('   映射的morph数量: ${mappedMorphNames.length}');
+        if (bsToHeadMapping.isNotEmpty) {
+          debugPrint(
+            '   最大BS索引: ${bsToHeadMapping.values.reduce((a, b) => a > b ? a : b)}',
+          );
+        }
+      }
+
       for (int frame = 0; frame < totalFrames; frame++) {
         final frameWeights = _blendshapeData![frame]; // 直接使用原始数据
         final baseIndex = frame * totalMorphTargets;
@@ -538,6 +1201,12 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
             value = value.clamp(0.0, 1.0);
 
             flatData[baseIndex + i] = value;
+          } else {
+            // 索引超出范围，记录警告
+            if (kDebugMode && frame == 0) {
+              debugPrint('⚠️  $morphName 的索引$bsIndex 超出数据长度$dataLength');
+            }
+            flatData[baseIndex + i] = 0.0;
           }
         }
       }
@@ -568,13 +1237,221 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
   }
 
-  /// 设置优化的Morph动画数据 - 智能增强和平滑处理
+  /// 设置测试Morph动画数据 - 完全按照test_0924.json还原
+  Future<void> _setupTestMorphAnimation() async {
+    if (_asset == null || _testBlendshapeData == null) return;
+
+    try {
+      final totalFrames = _testBlendshapeData!.length;
+      final frameLengthMs = 33.0; // 30fps
+
+      // 获取Head_Mod的所有morph targets
+      final headMorphNames = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+
+      if (kDebugMode) {
+        debugPrint('🧪 测试数据完全还原设置:');
+        debugPrint('   Head_Mod morph targets: ${headMorphNames.length}个');
+        debugPrint('   JSON数据长度: ${_testBlendshapeData!.first.length}个');
+        debugPrint('   总帧数: $totalFrames');
+        debugPrint('   帧长度: ${frameLengthMs}ms');
+      }
+
+      // 确保数据长度匹配
+      final jsonDataLength = _testBlendshapeData!.first.length;
+      final modelMorphCount = headMorphNames.length;
+
+      if (jsonDataLength != modelMorphCount) {
+        if (kDebugMode) {
+          debugPrint(
+            '⚠️ 数据长度不匹配: JSON($jsonDataLength) vs 模型($modelMorphCount)',
+          );
+          debugPrint('   将使用较小的长度进行映射');
+        }
+      }
+
+      // 使用实际可用的长度
+      final actualMorphCount = math.min(jsonDataLength, modelMorphCount);
+      final flatData = Float32List(totalFrames * actualMorphCount);
+
+      // 统计非零数据并按帧分组显示
+      int totalNonZeroValues = 0;
+      Map<int, int> nonZeroCountPerIndex = {};
+      Map<int, List<String>> frameData = {}; // 按帧存储非零数据
+
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = _testBlendshapeData![frame];
+        final baseIndex = frame * actualMorphCount;
+        List<String> currentFrameData = [];
+
+        for (int morphIndex = 0; morphIndex < actualMorphCount; morphIndex++) {
+          // 🎯 完全按照JSON数据还原，不做任何修改
+          double value = frameWeights[morphIndex];
+
+          // 只做基本的安全检查，保持原始数据
+          if (value.isNaN || value.isInfinite) {
+            value = 0.0;
+          }
+
+          flatData[baseIndex + morphIndex] = value;
+
+          // 收集非零值
+          if (value.abs() > 0.001) {
+            totalNonZeroValues++;
+            nonZeroCountPerIndex[morphIndex] =
+                (nonZeroCountPerIndex[morphIndex] ?? 0) + 1;
+            currentFrameData.add(
+              '索引$morphIndex(${headMorphNames[morphIndex]})=$value',
+            );
+          }
+        }
+
+        // 如果当前帧有数据，存储起来
+        if (currentFrameData.isNotEmpty) {
+          frameData[frame] = currentFrameData;
+        }
+      }
+
+      // 简化日志输出
+      if (kDebugMode && frameData.isNotEmpty) {
+        debugPrint('📋 检测到${frameData.length}帧有BS数据');
+      }
+
+      // 创建morph动画数据
+      final morphData = MorphAnimationData(
+        flatData,
+        headMorphNames.take(actualMorphCount).toList(), // 只使用实际映射的morph names
+        frameLengthInMs: frameLengthMs,
+      );
+
+      // 确保animation component已激活
+      await _asset!.addAnimationComponent();
+
+      // 设置动画数据
+      await _asset!.setMorphAnimationData(
+        morphData,
+        targetMeshNames: ["Head_Mod"],
+      );
+
+      if (kDebugMode) {
+        debugPrint(
+          '✅ 测试数据完全还原完成: $actualMorphCount个morph targets, ${nonZeroCountPerIndex.keys.length}个活跃索引',
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 设置测试Morph动画失败: $e');
+      }
+    }
+  }
+
+  /// 设置优化的Morph动画数据 - 使用实际音频长度
+  Future<void> _setupMorphAnimationWithDuration(double audioLengthMs) async {
+    if (_asset == null || _blendshapeData == null) return;
+
+    try {
+      final totalFrames = _blendshapeData!.length;
+      final frameLengthMs = audioLengthMs / totalFrames; // 使用实际音频长度
+
+      if (kDebugMode) {
+        debugPrint('🎯 动画同步设置:');
+        debugPrint('   总帧数: $totalFrames');
+        debugPrint('   音频长度: ${audioLengthMs}ms');
+        debugPrint('   每帧时长: ${frameLengthMs.toStringAsFixed(2)}ms');
+      }
+
+      // 获取Head_Mod的所有morph targets
+      final headMorphNames = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+
+      // 创建完整的BS映射
+      final bsToHeadMapping = _createBSMapping(headMorphNames);
+
+      if (bsToHeadMapping.isEmpty) {
+        if (kDebugMode) debugPrint('❌ 无法创建BS映射');
+        return;
+      }
+
+      // 预处理：优化BS数据
+      final optimizedData = _optimizeBlendshapeData(_blendshapeData!);
+
+      // 创建完整的动画数据
+      final mappedMorphNames = bsToHeadMapping.keys.toList();
+      final totalMorphTargets = mappedMorphNames.length;
+      final flatData = Float32List(totalFrames * totalMorphTargets);
+
+      _previousFrameWeights = null; // 重置平滑数据
+
+      for (int frame = 0; frame < totalFrames; frame++) {
+        final frameWeights = optimizedData[frame];
+        final baseIndex = frame * totalMorphTargets;
+        final currentFrameWeights = List<double>.filled(totalMorphTargets, 0.0);
+
+        // 第一步：应用原始权重和增强
+        for (int i = 0; i < mappedMorphNames.length; i++) {
+          final morphName = mappedMorphNames[i];
+          final bsIndex = bsToHeadMapping[morphName]!;
+
+          if (bsIndex < frameWeights.length) {
+            double value = frameWeights[bsIndex];
+            value = _enhanceMorphValue(morphName, value);
+            currentFrameWeights[i] = value;
+          }
+        }
+
+        // 第二步：应用平滑过渡
+        if (_previousFrameWeights != null) {
+          for (int i = 0; i < totalMorphTargets; i++) {
+            final smoothedValue = _applySmoothTransition(
+              _previousFrameWeights![i],
+              currentFrameWeights[i],
+              mappedMorphNames[i],
+            );
+            flatData[baseIndex + i] = smoothedValue;
+          }
+        } else {
+          for (int i = 0; i < totalMorphTargets; i++) {
+            flatData[baseIndex + i] = currentFrameWeights[i];
+          }
+        }
+
+        _previousFrameWeights = List.from(currentFrameWeights);
+      }
+
+      final morphData = MorphAnimationData(
+        flatData,
+        mappedMorphNames,
+        frameLengthInMs: frameLengthMs, // 使用实际计算的帧长度
+      );
+
+      // 确保animation component已激活
+      await _asset!.addAnimationComponent();
+
+      // 设置动画数据
+      await _asset!.setMorphAnimationData(
+        morphData,
+        targetMeshNames: ["Head_Mod"],
+      );
+
+      if (kDebugMode) {
+        debugPrint('✅ 同步优化的BS动画设置完成: ${mappedMorphNames.length}个morph targets');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('❌ 设置同步Morph动画失败: $e');
+      }
+    }
+  }
+
+  /// 设置优化的Morph动画数据 - 智能增强和平滑处理（兼容旧版本）
   Future<void> _setupMorphAnimation() async {
     if (_asset == null || _blendshapeData == null) return;
 
     try {
       final totalFrames = _blendshapeData!.length;
-      final frameLengthMs = 59160.0 / totalFrames; // 音频总长度/帧数
+      final frameLengthMs = 59160.0 / totalFrames; // 音频总长度/帧数（硬编码版本）
 
       // 获取Head_Mod的所有morph targets
       final headMorphNames = await _asset!.getMorphTargetNames(
@@ -860,14 +1737,28 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
         (currentValue - previousValue) * (1.0 - smoothingStrength);
   }
 
-  /// 🔍 分析BS数据特征
+  /// 🔍 分析BS数据特征 - 增强版本，检查数据对齐
   void _analyzeBSData() {
     if (_blendshapeData == null || _blendshapeData!.isEmpty) return;
 
-    const jawOpenIndex = 25; // ARKit jawOpen索引
-    const mouthFunnelIndex = 27;
-    const mouthPuckerIndex = 28;
+    // 首先检查数据长度
+    final firstFrameLength = _blendshapeData!.first.length;
+    if (kDebugMode) {
+      debugPrint('🔍 BS数据详细分析:');
+      debugPrint('   总帧数: ${_blendshapeData!.length}');
+      debugPrint('   每帧数据长度: $firstFrameLength');
+      debugPrint('   预期长度: 52 (ARKit标准)');
 
+      if (firstFrameLength != 52) {
+        debugPrint('⚠️  数据长度不匹配！实际${firstFrameLength}个，预期52个');
+        debugPrint('   这可能导致数据映射错误');
+      }
+    }
+
+    // 分析前几帧的数据分布，查看是否有明显的活跃值
+    _analyzeDataDistribution();
+
+    const jawOpenIndex = 25; // ARKit jawOpen索引
     double maxJawOpen = 0.0;
     double avgJawOpen = 0.0;
     int activeFrames = 0;
@@ -885,7 +1776,7 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     avgJawOpen /= _blendshapeData!.length;
 
     if (kDebugMode) {
-      debugPrint('📊 BS数据分析:');
+      debugPrint('📊 张嘴数据分析:');
       debugPrint('   最大张嘴幅度: ${maxJawOpen.toStringAsFixed(3)}');
       debugPrint('   平均张嘴幅度: ${avgJawOpen.toStringAsFixed(3)}');
       debugPrint('   活跃帧数: $activeFrames/${_blendshapeData!.length}');
@@ -895,6 +1786,48 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
 
       // 分析主要口型分布
       _analyzeMouthShapeDistribution();
+    }
+  }
+
+  /// 🔍 分析数据分布，查看活跃的索引
+  void _analyzeDataDistribution() {
+    if (_blendshapeData == null || _blendshapeData!.isEmpty) return;
+
+    final firstFrame = _blendshapeData!.first;
+    final midFrame = _blendshapeData![_blendshapeData!.length ~/ 2];
+
+    if (kDebugMode) {
+      debugPrint('🔍 数据分布分析:');
+
+      // 找出第一帧中有值的索引
+      final activeIndicesFirst = <int>[];
+      for (int i = 0; i < firstFrame.length; i++) {
+        if (firstFrame[i].abs() > 0.01) {
+          activeIndicesFirst.add(i);
+        }
+      }
+
+      // 找出中间帧中有值的索引
+      final activeIndicesMid = <int>[];
+      for (int i = 0; i < midFrame.length; i++) {
+        if (midFrame[i].abs() > 0.01) {
+          activeIndicesMid.add(i);
+        }
+      }
+
+      debugPrint('   第一帧活跃索引: $activeIndicesFirst');
+      debugPrint('   中间帧活跃索引: $activeIndicesMid');
+
+      // 显示前10个值
+      final first10 = firstFrame.take(10).toList();
+      debugPrint(
+        '   第一帧前10个值: ${first10.map((v) => v.toStringAsFixed(3)).join(", ")}',
+      );
+
+      final mid10 = midFrame.take(10).toList();
+      debugPrint(
+        '   中间帧前10个值: ${mid10.map((v) => v.toStringAsFixed(3)).join(", ")}',
+      );
     }
   }
 
@@ -939,79 +1872,110 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
     }
   }
 
-  /// 创建BS数据到Head_Mod的映射关系
+  /// 创建BS数据到Head_Mod的映射关系 - 正确版本
   Map<String, int> _createBSMapping(List<String> headMorphNames) {
-    // ARKit标准blendshape名称 (52个)
-    const bsNames = [
-      "browDownLeft", // 0
-      "browDownRight", // 1
-      "browInnerUp", // 2
-      "browOuterUpLeft", // 3
-      "browOuterUpRight", // 4
-      "cheekPuff", // 5
-      "cheekSquintLeft", // 6
-      "cheekSquintRight", // 7
-      "eyeBlinkLeft", // 8
-      "eyeBlinkRight", // 9
-      "eyeLookDownLeft", // 10
-      "eyeLookDownRight", // 11
-      "eyeLookInLeft", // 12
-      "eyeLookInRight", // 13
-      "eyeLookOutLeft", // 14
-      "eyeLookOutRight", // 15
-      "eyeLookUpLeft", // 16
-      "eyeLookUpRight", // 17
-      "eyeSquintLeft", // 18
-      "eyeSquintRight", // 19
-      "eyeWideLeft", // 20
-      "eyeWideRight", // 21
-      "jawForward", // 22
-      "jawLeft", // 23
-      "jawRight", // 24
-      "jawOpen", // 25
-      "mouthClose", // 26
-      "mouthFunnel", // 27
-      "mouthPucker", // 28
-      "mouthLeft", // 29
-      "mouthRight", // 30
-      "mouthSmileLeft", // 31
-      "mouthSmileRight", // 32
-      "mouthFrownLeft", // 33
-      "mouthFrownRight", // 34
-      "mouthDimpleLeft", // 35
-      "mouthDimpleRight", // 36
-      "mouthStretchLeft", // 37
-      "mouthStretchRight", // 38
-      "mouthRollLower", // 39
-      "mouthRollUpper", // 40
-      "mouthShrugLower", // 41
-      "mouthShrugUpper", // 42
-      "mouthPressLeft", // 43
-      "mouthPressRight", // 44
-      "mouthLowerDownLeft", // 45
-      "mouthLowerDownRight", // 46
-      "mouthUpperUpLeft", // 47
-      "mouthUpperUpRight", // 48
-      "noseSneerLeft", // 49
-      "noseSneerRight", // 50
-      "tongueOut", // 51
-    ];
-
     final mapping = <String, int>{};
 
-    for (int i = 0; i < bsNames.length; i++) {
-      final bsName = bsNames[i];
-      final headMorphName = "F.$bsName";
+    // 🎯 正确的映射：模型morph targets顺序 = BS.json数据顺序
+    // 模型中的顺序和BS.json完全一致！
+    const bsMapping = {
+      "F.eyeBlinkLeft": 0,
+      "F.eyeLookDownLeft": 1,
+      "F.eyeLookInLeft": 2,
+      "F.eyeLookOutLeft": 3,
+      "F.eyeLookUpLeft": 4,
+      "F.eyeSquintLeft": 5,
+      "F.eyeWideLeft": 6,
+      "F.eyeBlinkRight": 7,
+      "F.eyeLookDownRight": 8,
+      "F.eyeLookInRight": 9,
+      "F.eyeLookOutRight": 10,
+      "F.eyeLookUpRight": 11,
+      "F.eyeSquintRight": 12,
+      "F.eyeWideRight": 13,
+      "F.jawForward": 14,
+      "F.jawLeft": 15,
+      "F.jawRight": 16,
+      "F.jawOpen": 17, // 🔥 正确！
+      "F.mouthClose": 18,
+      "F.mouthFunnel": 19, // 🔥 正确！
+      "F.mouthPucker": 20, // 🔥 正确！
+      "F.mouthLeft": 21,
+      "F.mouthRight": 22,
+      "F.mouthSmileLeft": 23, // 🔥 正确！
+      "F.mouthSmileRight": 24, // 🔥 正确！
+      "F.mouthFrownLeft": 25,
+      "F.mouthFrownRight": 26,
+      "F.mouthDimpleLeft": 27,
+      "F.mouthDimpleRight": 28,
+      "F.mouthStretchLeft": 29,
+      "F.mouthStretchRight": 30,
+      "F.mouthRollLower": 31,
+      "F.mouthRollUpper": 32,
+      "F.mouthShrugLower": 33,
+      "F.mouthShrugUpper": 34,
+      "F.mouthPressLeft": 35,
+      "F.mouthPressRight": 36,
+      "F.mouthLowerDownLeft": 37,
+      "F.mouthLowerDownRight": 38,
+      "F.mouthUpperUpLeft": 39,
+      "F.mouthUpperUpRight": 40,
+      "F.browDownLeft": 41,
+      "F.browDownRight": 42,
+      "F.browInnerUp": 43,
+      "F.browOuterUpLeft": 44,
+      "F.browOuterUpRight": 45,
+      "F.cheekPuff": 46,
+      "F.cheekSquintLeft": 47,
+      "F.cheekSquintRight": 48,
+      "F.noseSneerLeft": 49,
+      "F.noseSneerRight": 50,
+      "F.tongueOut": 51,
+    };
 
-      // 检查Head_Mod是否有对应的morph target
-      if (headMorphNames.contains(headMorphName)) {
-        mapping[headMorphName] = i;
+    // 创建映射
+    for (final morphName in headMorphNames) {
+      if (bsMapping.containsKey(morphName)) {
+        mapping[morphName] = bsMapping[morphName]!;
       }
     }
 
     if (kDebugMode) {
-      debugPrint('🗺️ 创建了${mapping.length}个BS映射');
-      debugPrint('   映射的morph targets: ${mapping.keys.toList()}');
+      debugPrint('🗺️ 模型中的morph targets (${headMorphNames.length}个):');
+      for (int i = 0; i < headMorphNames.length; i++) {
+        debugPrint('   [$i] ${headMorphNames[i]}');
+      }
+
+      debugPrint('🗺️ BS映射结果 (正确版本):');
+      debugPrint('   成功映射: ${mapping.length}个');
+
+      // 显示关键映射
+      const keyMorphs = [
+        "F.jawOpen",
+        "F.mouthFunnel",
+        "F.mouthPucker",
+        "F.mouthSmileLeft",
+        "F.mouthSmileRight",
+      ];
+      debugPrint('🔍 关键映射检查 (正确版本):');
+      for (final keyMorph in keyMorphs) {
+        if (mapping.containsKey(keyMorph)) {
+          debugPrint('   ✅ $keyMorph -> BS索引${mapping[keyMorph]}');
+        } else {
+          debugPrint('   ❌ $keyMorph -> 未找到');
+        }
+      }
+
+      // 检查BS数据长度
+      if (_blendshapeData != null && _blendshapeData!.isNotEmpty) {
+        final dataLength = _blendshapeData!.first.length;
+        debugPrint('📊 BS数据信息:');
+        debugPrint('   数据长度: $dataLength');
+        debugPrint('   标准长度: 52');
+        if (dataLength == 55) {
+          debugPrint('   ⚠️  额外的3个值将被忽略 (索引52-54)');
+        }
+      }
     }
 
     return mapping;
@@ -1045,187 +2009,212 @@ class _MorphTargetUnifiedState extends State<MorphTargetUnified>
             ),
           ),
 
-          // 控制面板
-          Container(
-            height: 180, // 增加高度以适应两行按钮
-            padding: const EdgeInsets.all(12),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 状态显示
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      '状态: $_status',
-                      style: const TextStyle(
+          // 控制面板 - ScrollView
+          Expanded(
+            flex: 1,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 状态显示
+                    Text(
+                      _status,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _isInitialized ? Colors.green : Colors.orange,
                         fontWeight: FontWeight.bold,
-                        fontSize: 10,
                       ),
                     ),
-                  ),
 
-                  const SizedBox(height: 8),
+                    const SizedBox(height: 16),
 
-                  // 🎯 口型同步播放控制
-                  Text(
-                    '口型同步播放',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.purple,
-                      fontSize: 14,
-                    ),
-                  ),
-                  Text(
-                    '对比测试: 优化版(增强+平滑) vs 原始版(无修饰)',
-                    style: const TextStyle(color: Colors.grey, fontSize: 10),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // 播放控制按钮 - 第一行
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed:
-                            !_isLipSyncPlaying &&
-                                _isBlendshapeLoaded &&
-                                _isInitialized
-                            ? _playLipSync
-                            : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green[100],
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                        ),
-                        icon: const Icon(Icons.play_arrow, size: 14),
-                        label: const Text(
-                          '优化播放',
-                          style: TextStyle(fontSize: 11),
+                    // 播放控制按钮
+                    if (_isInitialized) ...[
+                      const Text(
+                        '口型同步播放控制',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
                         ),
                       ),
-                      ElevatedButton.icon(
-                        onPressed:
-                            !_isLipSyncPlaying &&
-                                _isBlendshapeLoaded &&
-                                _isInitialized
-                            ? _playRawLipSync
-                            : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue[100],
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                        ),
-                        icon: const Icon(Icons.play_circle_outline, size: 14),
-                        label: const Text(
-                          '原始播放',
-                          style: TextStyle(fontSize: 11),
-                        ),
-                      ),
-                    ],
-                  ),
+                      const SizedBox(height: 12),
 
-                  const SizedBox(height: 6),
-
-                  // 控制按钮 - 第二行
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      ElevatedButton.icon(
-                        onPressed: _isLipSyncPlaying ? _stopLipSync : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red[100],
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                        ),
-                        icon: const Icon(Icons.stop, size: 14),
-                        label: const Text('停止', style: TextStyle(fontSize: 11)),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: _isInitialized
-                            ? _resetAllMorphTargets
-                            : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange[100],
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                        ),
-                        icon: const Icon(Icons.refresh, size: 14),
-                        label: const Text('重置', style: TextStyle(fontSize: 11)),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  const SizedBox(height: 8),
-
-                  // 数据状态显示
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _isBlendshapeLoaded
-                          ? Colors.green[50]
-                          : Colors.orange[50],
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(
-                        color: _isBlendshapeLoaded
-                            ? Colors.green
-                            : Colors.orange,
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _isBlendshapeLoaded
-                              ? Icons.check_circle
-                              : Icons.hourglass_empty,
-                          size: 12,
-                          color: _isBlendshapeLoaded
-                              ? Colors.green
-                              : Colors.orange,
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            _isBlendshapeLoaded
-                                ? 'BS数据: ${_blendshapeData?.length ?? 0}帧 | 动画: ${_animations.length}个 | 优化: 去噪+增强+平滑'
-                                : '数据加载中...',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: _isBlendshapeLoaded
-                                  ? Colors.green[800]
-                                  : Colors.orange[800],
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          // 播放按钮
+                          ElevatedButton.icon(
+                            onPressed: !_isLipSyncPlaying && _isBlendshapeLoaded
+                                ? _playLipSync
+                                : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green[100],
+                              foregroundColor: Colors.green[800],
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 12,
+                              ),
+                              elevation: 2,
                             ),
-                            overflow: TextOverflow.ellipsis,
+                            icon: const Icon(Icons.play_arrow, size: 20),
+                            label: const Text(
+                              '播放',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+
+                          // 停止按钮
+                          ElevatedButton.icon(
+                            onPressed: _isLipSyncPlaying ? _stopLipSync : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _isLipSyncPlaying
+                                  ? Colors.red[400]
+                                  : Colors.red[100],
+                              foregroundColor: _isLipSyncPlaying
+                                  ? Colors.white
+                                  : Colors.red[800],
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 12,
+                              ),
+                              elevation: _isLipSyncPlaying ? 4 : 2,
+                            ),
+                            icon: const Icon(Icons.stop, size: 20),
+                            label: const Text(
+                              '停止',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // 播放状态指示
+                      if (_isLipSyncPlaying) ...[
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.blue[200]!),
+                          ),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.blue[600]!,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                '正在播放口型同步...',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.blue,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
+                        const SizedBox(height: 16),
                       ],
+                    ],
+
+                    // 数据状态显示
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _isBlendshapeLoaded
+                            ? Colors.green[50]
+                            : Colors.orange[50],
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _isBlendshapeLoaded
+                              ? Colors.green[200]!
+                              : Colors.orange[200]!,
+                          width: 1,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                _isBlendshapeLoaded
+                                    ? Icons.check_circle
+                                    : Icons.hourglass_empty,
+                                size: 16,
+                                color: _isBlendshapeLoaded
+                                    ? Colors.green[600]
+                                    : Colors.orange[600],
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '数据状态',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: _isBlendshapeLoaded
+                                      ? Colors.green[800]
+                                      : Colors.orange[800],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          if (_isBlendshapeLoaded) ...[
+                            Text(
+                              'BS数据: ${_blendshapeData?.length ?? 0}帧',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.green[700],
+                              ),
+                            ),
+                            Text(
+                              '动画: ${_animations.length}个',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.green[700],
+                              ),
+                            ),
+                            if (_isTestDataLoaded)
+                              Text(
+                                '测试数据: ${_testBlendshapeData?.length ?? 0}帧',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.green[700],
+                                ),
+                              ),
+                          ] else ...[
+                            Text(
+                              '数据加载中...',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.orange[700],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
