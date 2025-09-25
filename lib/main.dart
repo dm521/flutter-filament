@@ -57,6 +57,18 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   // 优化控制
   bool _enableOptimization = false; // 默认关闭，因为原始数据已经比较自然
 
+  // 眨眼权重控制
+  double _leftEyeBlinkWeight = 0.0;
+  double _rightEyeBlinkWeight = 0.0;
+  ThermionEntity? _headEntity;
+
+  // 防抖动控制
+  Timer? _blinkWeightTimer;
+  bool _isSettingWeights = false;
+
+  // 手动停止标志
+  bool _isManuallyStopped = false;
+
   // 人物旋转控制
   double _rotationAngle = 0.0; // 0=正面, 90=右侧, 180=背面, 270=左侧
 
@@ -77,6 +89,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   void dispose() {
     _completeSubscription?.cancel();
     _audioPlayer.dispose();
+    _blinkWeightTimer?.cancel(); // 清理眨眼权重定时器
     // 停止所有动画
     if (_asset != null) {
       _stopAllAnimations();
@@ -93,10 +106,18 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       await Future.delayed(Duration(milliseconds: 300));
       await _viewer!.setRendering(true);
 
-      // 设置环境
-      await _viewer!.loadSkybox(
-        "assets/environments/studio_small_env_skybox.ktx",
-      );
+      // 🖼️ 设置背景图片（替代 skybox）
+      try {
+        await _viewer!.setBackgroundImage(
+          'assets/images/background.png',
+          fillHeight: true,
+        );
+        if (kDebugMode) debugPrint('🖼️ 背景图片已加载');
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ 背景图片加载失败，使用默认背景: $e');
+      }
+
+      // 设置环境光照（IBL）
       await _viewer!.loadIbl(
         "assets/environments/studio_small_env_ibl.ktx",
         intensity: 15600.0,
@@ -113,9 +134,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
           debugPrint('🔄 IBL 旋转已应用: 0.558505 弧度');
         }
       } catch (e) {
-        if (kDebugMode) {
-          debugPrint('⚠️ IBL 旋转失败: $e');
-        }
+        if (kDebugMode) debugPrint('⚠️ IBL 旋转设置失败: $e');
       }
 
       // 设置专业灯光系统（基于 main.dart 的配置）
@@ -218,7 +237,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       setState(() => _status = '加载角色模型...');
 
       // 加载模型
-      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0924.glb");
+      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0925.glb");
 
       // 检测和设置动画
       await _loadAnimations();
@@ -230,6 +249,9 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
       // 加载BS数据
       await _loadBlendshapeData();
+
+      // 初始化眨眼控制
+      await _initializeBlinkControl();
 
       _isInitialized = true;
       setState(() => _status = '✅ 准备就绪');
@@ -268,6 +290,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     try {
       setState(() {
         _isPlaying = true;
+        _isManuallyStopped = false; // 重置手动停止标志
         _status = '🎬 播放中...';
       });
 
@@ -550,6 +573,8 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
   // 🛑 停止所有动画
   Future<void> _stopAllAnimations() async {
+    if (kDebugMode) debugPrint('🛑 停止按钮被点击，开始停止所有动画...');
+
     try {
       setState(() => _status = '⏹️ 停止所有动画...');
 
@@ -583,10 +608,11 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
         _isIdlePlaying = false;
         _isCustomAnimationPlaying = false;
         _selectedAnimationIndex = -1;
-        _status = '✅ 所有动画已停止';
+        _isManuallyStopped = true; // 标记为手动停止
+        _status = '✅ 所有动画已停止 - 角色静止';
       });
 
-      if (kDebugMode) debugPrint('✅ 所有动画已停止');
+      if (kDebugMode) debugPrint('✅ 所有动画已停止，角色保持静止状态');
     } catch (e) {
       setState(() => _status = '❌ 停止动画失败: $e');
       if (kDebugMode) debugPrint('停止所有动画失败: $e');
@@ -618,8 +644,8 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
           break;
         case CameraPreset.bustCloseUp: // 特写
           distance = 0.6;
-          height = 1.7;
-          targetHeight = 1.7;
+          height = 1.6;
+          targetHeight = 1.8;
           break;
       }
 
@@ -677,6 +703,82 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     return '正面';
   }
 
+  // 👁️ 初始化眨眼控制（找到Head_Mod实体）
+  Future<void> _initializeBlinkControl() async {
+    if (_asset == null) return;
+
+    try {
+      final childEntities = await _asset!.getChildEntities();
+      for (final entity in childEntities) {
+        final entityName = FilamentApp.instance!.getNameForEntity(entity);
+        if (entityName == "Head_Mod") {
+          _headEntity = entity;
+          if (kDebugMode) {
+            debugPrint('✅ 找到Head_Mod实体，眨眼控制已初始化');
+          }
+          break;
+        }
+      }
+
+      if (_headEntity == null) {
+        if (kDebugMode) debugPrint('❌ 未找到Head_Mod实体');
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ 初始化眨眼控制失败: $e');
+    }
+  }
+
+  // 👁️ 防抖动设置眨眼权重
+  void _setBlinkWeights() {
+    // 取消之前的定时器
+    _blinkWeightTimer?.cancel();
+
+    // 设置新的定时器，延迟执行
+    _blinkWeightTimer = Timer(Duration(milliseconds: 100), () {
+      _setBlinkWeightsImmediate();
+    });
+  }
+
+  // 👁️ 立即设置眨眼权重（内部方法）
+  Future<void> _setBlinkWeightsImmediate() async {
+    if (_asset == null || _headEntity == null || _isSettingWeights) return;
+
+    _isSettingWeights = true;
+
+    try {
+      final morphTargets = await _asset!.getMorphTargetNames(
+        entity: _headEntity!,
+      );
+      final weights = List<double>.filled(morphTargets.length, 0.0);
+
+      // 设置左眼权重 - 使用Head_Mod中的blendShape1.eyeBlinkLeft
+      final leftBlinkIndex = morphTargets.indexOf('F.eyeBlinkLeft');
+      if (leftBlinkIndex >= 0 && leftBlinkIndex < weights.length) {
+        weights[leftBlinkIndex] = _leftEyeBlinkWeight.clamp(0.0, 1.0);
+      }
+
+      // 设置右眼权重 - 使用Head_Mod中的blendShape1.eyeBlinkRight
+      final rightBlinkIndex = morphTargets.indexOf('F.eyeBlinkRight');
+      if (rightBlinkIndex >= 0 && rightBlinkIndex < weights.length) {
+        weights[rightBlinkIndex] = _rightEyeBlinkWeight.clamp(0.0, 1.0);
+      }
+
+      // 安全检查：确保morphTargets不为空
+      if (morphTargets.isEmpty) {
+        if (kDebugMode) debugPrint('⚠️ morphTargets为空，跳过权重设置');
+        return;
+      }
+
+      await _asset!.setMorphTargetWeights(_headEntity!, weights);
+
+      // 权重设置成功，不输出调试信息以保持控制台简洁
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ 设置眨眼权重失败: $e');
+    } finally {
+      _isSettingWeights = false;
+    }
+  }
+
   // 🎭 加载和管理动画
   Future<void> _loadAnimations() async {
     if (_asset == null) return;
@@ -707,9 +809,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
           debugPrint('   ${i + 1}. ${_animations[i]}');
         }
       }
-
-      // 🔍 详细分析模型的morph target结构
-      await _analyzeMorphTargetStructure();
 
       // 查找idle动画
       _findIdleAnimation(animationNames);
@@ -774,6 +873,12 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
   // 🔄 恢复idle动画
   Future<void> _resumeIdleAnimation() async {
+    // 如果用户手动停止了动画，不要自动恢复
+    if (_isManuallyStopped) {
+      if (kDebugMode) debugPrint('🛑 用户手动停止了动画，跳过自动恢复idle动画');
+      return;
+    }
+
     if (!_isIdlePlaying && !_isCustomAnimationPlaying) {
       await _startIdleAnimation();
     }
@@ -858,103 +963,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
-  // 🔍 详细分析模型的morph target结构
-  Future<void> _analyzeMorphTargetStructure() async {
-    if (_asset == null) return;
-
-    try {
-      if (kDebugMode) {
-        debugPrint('🔍 ====== 模型Morph Target结构分析 ======');
-      }
-
-      final childEntities = await _asset!.getChildEntities();
-
-      for (int i = 0; i < childEntities.length; i++) {
-        final entity = childEntities[i];
-        final entityName = FilamentApp.instance!.getNameForEntity(entity);
-
-        try {
-          final morphTargets = await _asset!.getMorphTargetNames(
-            entity: entity,
-          );
-
-          if (morphTargets.isNotEmpty && kDebugMode) {
-            debugPrint('');
-            debugPrint('🏷️ 实体 $i: "$entityName"');
-            debugPrint('   📊 Morph Targets数量: ${morphTargets.length}');
-
-            // 分类统计
-            final eyeTargets = morphTargets
-                .where(
-                  (name) =>
-                      name.toLowerCase().contains('eye') ||
-                      name.toLowerCase().contains('blink'),
-                )
-                .toList();
-
-            final mouthTargets = morphTargets
-                .where(
-                  (name) =>
-                      name.toLowerCase().contains('mouth') ||
-                      name.toLowerCase().contains('jaw'),
-                )
-                .toList();
-
-            final browTargets = morphTargets
-                .where((name) => name.toLowerCase().contains('brow'))
-                .toList();
-
-            if (eyeTargets.isNotEmpty) {
-              debugPrint('   👁️ 眼部相关 (${eyeTargets.length}个):');
-              for (int j = 0; j < eyeTargets.length; j++) {
-                debugPrint('      [$j]: ${eyeTargets[j]}');
-              }
-            }
-
-            if (mouthTargets.isNotEmpty) {
-              debugPrint('   👄 嘴部相关 (${mouthTargets.length}个):');
-              for (int j = 0; j < mouthTargets.length; j++) {
-                debugPrint('      [$j]: ${mouthTargets[j]}');
-              }
-            }
-
-            if (browTargets.isNotEmpty) {
-              debugPrint('   🤨 眉毛相关 (${browTargets.length}个):');
-              for (int j = 0; j < browTargets.length; j++) {
-                debugPrint('      [$j]: ${browTargets[j]}');
-              }
-            }
-
-            // 如果是Eyelashes_Mod，显示所有morph targets（眨眼动画数据）
-            if (entityName == "Eyelashes_Mod") {
-              debugPrint('   👁️ Eyelashes_Mod完整Morph Target列表（眨眼动画）:');
-              for (int j = 0; j < morphTargets.length; j++) {
-                debugPrint('      [$j]: ${morphTargets[j]}');
-              }
-            }
-
-            // 如果是Head_Mod，也显示完整列表
-            if (entityName == "Head_Mod") {
-              debugPrint('   📋 Head_Mod完整Morph Target列表:');
-              for (int j = 0; j < morphTargets.length; j++) {
-                debugPrint('      [$j]: ${morphTargets[j]}');
-              }
-            }
-          }
-        } catch (e) {
-          if (kDebugMode) debugPrint('   ❌ 获取实体$i信息失败: $e');
-        }
-      }
-
-      if (kDebugMode) {
-        debugPrint('');
-        debugPrint('🔍 ====== 结构分析完成 ======');
-      }
-    } catch (e) {
-      if (kDebugMode) debugPrint('❌ 模型结构分析失败: $e');
-    }
-  }
-
   // 🎬 播放选中的动画
   Future<void> _playSelectedAnimation(int animationIndex) async {
     if (_asset == null ||
@@ -974,6 +982,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
         _selectedAnimationIndex = animationIndex;
         _isCustomAnimationPlaying = true;
         _isIdlePlaying = false;
+        _isManuallyStopped = false; // 重置手动停止标志
       });
 
       if (kDebugMode) {
@@ -989,6 +998,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     await _stopAllAnimations();
     setState(() {
       _selectedAnimationIndex = -1;
+      _isManuallyStopped = false; // 重置手动停止标志
     });
     await _startIdleAnimation();
   }
@@ -1206,6 +1216,11 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
             const SizedBox(height: 8),
 
+            // 眨眼控制区
+            _buildBlinkControlSection(),
+
+            const SizedBox(height: 8),
+
             // 设置区
             _buildSettingsSection(),
 
@@ -1326,7 +1341,16 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: _isInitialized ? _stopAllAnimations : null,
+                  onPressed:
+                      (_isInitialized &&
+                          (_isPlaying ||
+                              _isIdlePlaying ||
+                              _isCustomAnimationPlaying))
+                      ? () {
+                          if (kDebugMode) debugPrint('🛑 停止动画按钮被点击');
+                          _stopAllAnimations();
+                        }
+                      : null,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.grey[600],
                     foregroundColor: Colors.white,
@@ -1587,34 +1611,231 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
+  // 👁️ 眨眼控制区域
+  Widget _buildBlinkControlSection() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 标题
+          Row(
+            children: [
+              const Icon(Icons.visibility, size: 16, color: Colors.orange),
+              const SizedBox(width: 8),
+              const Text(
+                '眨眼控制',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Text(
+                '范围: 0.0 ~ 1.0',
+                style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // 左眼滑块
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    '左眼',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                  ),
+                  const Spacer(),
+                  Text(
+                    _leftEyeBlinkWeight.toStringAsFixed(2),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.blue[700],
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: _leftEyeBlinkWeight,
+                min: 0.0,
+                max: 1.0,
+                divisions: 20, // 0.05 精度
+                onChanged: _isInitialized
+                    ? (value) {
+                        setState(() {
+                          _leftEyeBlinkWeight = value;
+                        });
+                        _setBlinkWeights();
+                      }
+                    : null,
+                activeColor: Colors.blue[400],
+                inactiveColor: Colors.grey[300],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // 右眼滑块
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    '右眼',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                  ),
+                  const Spacer(),
+                  Text(
+                    _rightEyeBlinkWeight.toStringAsFixed(2),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.green[700],
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: _rightEyeBlinkWeight,
+                min: 0.0,
+                max: 1.0,
+                divisions: 20, // 0.05 精度
+                onChanged: _isInitialized
+                    ? (value) {
+                        setState(() {
+                          _rightEyeBlinkWeight = value;
+                        });
+                        _setBlinkWeights();
+                      }
+                    : null,
+                activeColor: Colors.green[400],
+                inactiveColor: Colors.grey[300],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // 快捷按钮
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _isInitialized
+                      ? () {
+                          setState(() {
+                            _leftEyeBlinkWeight = 0.0;
+                            _rightEyeBlinkWeight = 0.0;
+                          });
+                          _setBlinkWeights();
+                        }
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[400],
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                  ),
+                  child: const Text('睁眼', style: TextStyle(fontSize: 11)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _isInitialized
+                      ? () {
+                          setState(() {
+                            _leftEyeBlinkWeight = 1.0;
+                            _rightEyeBlinkWeight = 1.0;
+                          });
+                          _setBlinkWeights();
+                        }
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange[400],
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                  ),
+                  child: const Text('闭眼', style: TextStyle(fontSize: 11)),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   // ⚙️ 设置区域
   Widget _buildSettingsSection() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.tune, size: 16, color: Colors.grey),
-          const SizedBox(width: 8),
-          const Text(
-            '口型优化',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
           ),
-          const Spacer(),
-          widgets.Transform.scale(
-            scale: 0.8,
-            child: Switch(
-              value: _enableOptimization,
-              onChanged: (value) {
-                setState(() {
-                  _enableOptimization = value;
-                });
-              },
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 标题
+          Row(
+            children: [
+              const Icon(Icons.settings, size: 16, color: Colors.grey),
+              const SizedBox(width: 8),
+              const Text(
+                '设置',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // 口型优化开关
+          Row(
+            children: [
+              const Icon(Icons.tune, size: 14, color: Colors.grey),
+              const SizedBox(width: 8),
+              const Text(
+                '口型优化',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+              const Spacer(),
+              widgets.Transform.scale(
+                scale: 0.8,
+                child: Switch(
+                  value: _enableOptimization,
+                  onChanged: (value) {
+                    setState(() {
+                      _enableOptimization = value;
+                    });
+                  },
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
           ),
         ],
       ),

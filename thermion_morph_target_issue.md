@@ -170,3 +170,112 @@ if (childEntities.length > 12) {
 3. **结果**：身体动作和口型同步完美配合，实现了预期的 3D 数字人表现效果
 
 这个解决方案不仅解决了当前问题，还为后续的扩展和优化奠定了良好的技术基础。
+
+
+
+I/flutter ( 5601): 🏷️ 实体 0: "Head_Mod"
+I/flutter ( 5601):    📊 Morph Targets数量: 52
+I/flutter ( 5601):    👁️ 眼部相关 (14个):
+I/flutter ( 5601):       [0]: F.eyeBlinkLeft
+I/flutter ( 5601):       [1]: F.eyeLookDownLeft
+I/flutter ( 5601):       [2]: F.eyeLookInLeft
+I/flutter ( 5601):       [3]: F.eyeLookOutLeft
+I/flutter ( 5601):       [4]: F.eyeLookUpLeft
+I/flutter ( 5601):       [5]: F.eyeSquintLeft
+I/flutter ( 5601):       [6]: F.eyeWideLeft
+I/flutter ( 5601):       [7]: F.eyeBlinkRight
+I/flutter ( 5601):       [8]: F.eyeLookDownRight
+I/flutter ( 5601):       [9]: F.eyeLookInRight
+I/flutter ( 5601):       [10]: F.eyeLookOutRight
+I/flutter ( 5601):       [11]: F.eyeLookUpRight
+I/flutter ( 5601):       [12]: F.eyeSquintRight
+I/flutter ( 5601):       [13]: F.eyeWideRight
+I/flutter ( 5601):    👄 嘴部相关 (27个):
+I/flutter ( 5601):       [0]: F.jawForward
+I/flutter ( 5601):       [1]: F.jawLeft
+I/flutter ( 5601):       [2]: F.jawRight
+I/flutter ( 5601):       [3]: F.jawOpen
+I/flutter ( 5601):       [4]: F.mouthClose
+I/flutter ( 5601):       [5]: F.mouthFunnel
+I/flutter ( 5601):       [6]: F.mouthPucker
+I/flutter ( 5601):       [7]: F.mouthLeft
+I/flutter ( 5601):       [8]: F.mouthRight
+I/flutter ( 5601):       [9]: F.mouthSmileLeft
+I/flutter ( 5601):       [10]: F.mouthSmileRight
+I/flutter ( 5601):       [11]: F.mouthFrownLeft
+I/flutter ( 5601):       [12]: F.mouthFrownRight
+I/flutter ( 5601):       [13]: F.mouthDimpleLeft
+I/flutter ( 5601):       [14]: F.mouthDimpleRight
+I/flutter ( 5601):       [15]: F.mouthStretchLeft
+I/flutter ( 5601):       [16]: F.mouthStretchRight
+I/flutter ( 5601):       [17]: F.mouthRollLower
+I/flutter ( 5601):       [18]: F.mouthRollUpper
+I/flutter ( 5601):       [19]: F.mouthShrugLower
+I/flutter ( 5601):       [20]: F.mouthShrugUpper
+I/flutter ( 5601):       [21]: F.mouthPressLeft
+I/flutter ( 5601):       [22]: F.mouthPressRight
+I/flutter ( 5601):       [23]: F.mouthLowerDownLeft
+I/flutter ( 5601):       [24]: F.mouthLowerDownRight
+I/flutter ( 5601):       [25]: F.mouthUpperUpLeft
+I/flutter ( 5601):       [26]: F.mouthUpperUpRight
+I/flutter ( 5601):    🤨 眉毛相关 (5个):
+I/flutter ( 5601):       [0]: F.browDownLeft
+I/flutter ( 5601):       [1]: F.browDownRight
+I/flutter ( 5601):       [2]: F.browInnerUp
+I/flutter ( 5601):       [3]: F.browOuterUpLeft
+I/flutter ( 5601):       [4]: F.browOuterUpRight
+I/flutter ( 5601):    📋 Head_Mod完整Morph Target列表:
+I/flutter ( 5601):       [0]: F.eyeBlinkLeft
+I/flutter ( 5601):       [1]: F.eyeLookDownLeft
+I/flutter ( 5601):       [2]: F.eyeLookInLeft
+I/flutter ( 5601):       [3]: F.eyeLookOutLeft
+I/flutter ( 5601):       [4]: F.eyeLookUpLeft
+I/flutter ( 5601):       [5]: F.eyeSquintLeft
+I/flutter ( 5601):       [6]: F.eyeWideLeft
+I/flutter ( 5601):       [7]: F.eyeBlinkRight
+I/flutter ( 5601):       [8]: F.eyeLookDownRight
+I/flutter ( 5601):       [9]: F.eyeLookInRight
+I/flutter ( 5601):       [10]: F.eyeLookOutRight
+I/flutter ( 5601):       [11]: F.eyeLookUpRight
+I/flutter ( 5601):       [12]: F.eyeSquintRight
+I/flutter ( 5601):       [13]: F.eyeWideRight
+I/flutter ( 5601):       [14]: F.jawForward
+I/flutter ( 5601):       [15]: F.jawLeft
+I/flutter ( 5601):       [16]: F.jawRight
+I/flutter ( 5601):       [17]: F.jawOpen
+I/flutter ( 5601):       [18]: F.mouthClose
+I/flutter ( 5601):       [19]: F.mouthFunnel
+I/flutter ( 5601):       [20]: F.mouthPucker
+I/flutter ( 5601):       [21]: F.mouthLeft
+I/flutter ( 5601):       [22]: F.mouthRight
+I/flutter ( 5601):       [23]: F.mouthSmileLeft
+I/flutter ( 5601):       [24]: F.mouthSmileRight
+I/flutter ( 5601):       [25]: F.mouthFrownLeft
+I/flutter ( 5601):       [26]: F.mouthFrownRight
+I/flutter ( 5601):       [27]: F.mouthDimpleLeft
+I/flutter ( 5601):       [28]: F.mouthDimpleRight
+I/flutter ( 5601):       [29]: F.mouthStretchLeft
+I/flutter ( 5601):       [30]: F.mouthStretchRight
+I/flutter ( 5601):       [31]: F.mouthRollLower
+I/flutter ( 5601):       [32]: F.mouthRollUpper
+I/flutter ( 5601):       [33]: F.mouthShrugLower
+I/flutter ( 5601):       [34]: F.mouthShrugUpper
+I/flutter ( 5601):       [35]: F.mouthPressLeft
+I/flutter ( 5601):       [36]: F.mouthPressRight
+I/flutter ( 5601):       [37]: F.mouthLowerDownLeft
+I/flutter ( 5601):       [38]: F.mouthLowerDownRight
+I/flutter ( 5601):       [39]: F.mouthUpperUpLeft
+I/flutter ( 5601):       [40]: F.mouthUpperUpRight
+I/flutter ( 5601):       [41]: F.browDownLeft
+I/flutter ( 5601):       [42]: F.browDownRight
+I/flutter ( 5601):       [43]: F.browInnerUp
+I/flutter ( 5601):       [44]: F.browOuterUpLeft
+I/flutter ( 5601):       [45]: F.browOuterUpRight
+I/flutter ( 5601):       [46]: F.cheekPuff
+I/flutter ( 5601):       [47]: F.cheekSquintLeft
+I/flutter ( 5601):       [48]: F.cheekSquintRight
+I/flutter ( 5601):       [49]: F.noseSneerLeft
+I/flutter ( 5601):       [50]: F.noseSneerRight
+I/flutter ( 5601):       [51]: F.tongueOut
+I/flutter ( 5601): 
+I/flutter ( 5601): 🔍 ====== 结构分析完成 ======
