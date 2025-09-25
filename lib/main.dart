@@ -48,12 +48,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   List<List<double>>? _blendshapeData;
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isPlaying = false;
-  bool _isTestingBlink = false;
 
-  // 眨眼权重控制
-  double _leftEyeBlinkWeight = 0.0;
-  double _rightEyeBlinkWeight = 0.0;
-  ThermionEntity? _headEntity;
   StreamSubscription<void>? _completeSubscription;
 
   // 相机预设
@@ -235,9 +230,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
       // 加载BS数据
       await _loadBlendshapeData();
-
-      // 初始化眨眼控制
-      await _initializeBlinkControl();
 
       _isInitialized = true;
       setState(() => _status = '✅ 准备就绪');
@@ -601,187 +593,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
-  // 👁️ 测试眨眼动画
-  Future<void> _testBlinkAnimation() async {
-    if (_asset == null || _isTestingBlink) return;
-
-    setState(() {
-      _isTestingBlink = true;
-      _status = '👁️ 测试眨眼动画...';
-    });
-
-    try {
-      // 首先停止所有动画，避免冲突
-      await _stopAllAnimations();
-      await Future.delayed(Duration(milliseconds: 500)); // 等待停止完成
-
-      // 找到Head_Mod实体
-      final childEntities = await _asset!.getChildEntities();
-      ThermionEntity? headEntity;
-
-      for (final entity in childEntities) {
-        final entityName = FilamentApp.instance!.getNameForEntity(entity);
-        if (entityName == "Head_Mod") {
-          headEntity = entity;
-          break;
-        }
-      }
-
-      if (headEntity != null) {
-        final morphTargets = await _asset!.getMorphTargetNames(
-          entity: headEntity,
-        );
-        final weights = List<double>.filled(morphTargets.length, 0.0);
-
-        if (kDebugMode) {
-          debugPrint('👁️ 开始眨眼测试...');
-          debugPrint('📊 Head_Mod找到 ${morphTargets.length} 个morph targets');
-
-          // 显示眨眼相关的morph targets
-          for (int i = 0; i < morphTargets.length; i++) {
-            final target = morphTargets[i];
-            if (target.contains('eyeBlink')) {
-              debugPrint('   👁️ [$i] $target (眨眼相关)');
-            }
-          }
-        }
-
-        // 测试1: 左眼眨眼
-        final leftBlinkIndex = morphTargets.indexOf('F.eyeBlinkLeft');
-        if (leftBlinkIndex >= 0) {
-          setState(() => _status = '👁️ 测试左眼眨眼...');
-          weights[leftBlinkIndex] = 1.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          await Future.delayed(Duration(milliseconds: 1000));
-          weights[leftBlinkIndex] = 0.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          if (kDebugMode) debugPrint('✅ 左眼眨眼测试完成 (F.eyeBlinkLeft)');
-        } else {
-          if (kDebugMode) debugPrint('⚠️ 未找到F.eyeBlinkLeft morph target');
-        }
-
-        await Future.delayed(Duration(milliseconds: 500));
-
-        // 测试2: 右眼眨眼
-        final rightBlinkIndex = morphTargets.indexOf('F.eyeBlinkRight');
-        if (rightBlinkIndex >= 0) {
-          setState(() => _status = '👁️ 测试右眼眨眼...');
-          weights[rightBlinkIndex] = 1.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          await Future.delayed(Duration(milliseconds: 1000));
-          weights[rightBlinkIndex] = 0.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          if (kDebugMode) debugPrint('✅ 右眼眨眼测试完成 (F.eyeBlinkRight)');
-        } else {
-          if (kDebugMode) debugPrint('⚠️ 未找到F.eyeBlinkRight morph target');
-        }
-
-        await Future.delayed(Duration(milliseconds: 500));
-
-        // 测试3: 双眼同时眨眼
-        if (leftBlinkIndex >= 0 && rightBlinkIndex >= 0) {
-          setState(() => _status = '👁️ 测试双眼眨眼...');
-          weights[leftBlinkIndex] = 1.0;
-          weights[rightBlinkIndex] = 1.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          await Future.delayed(Duration(milliseconds: 1000));
-          weights[leftBlinkIndex] = 0.0;
-          weights[rightBlinkIndex] = 0.0;
-          await _asset!.setMorphTargetWeights(headEntity, weights);
-          if (kDebugMode) debugPrint('✅ 双眼眨眼测试完成');
-        }
-
-        setState(() => _status = '✅ 眨眼测试完成');
-        if (kDebugMode) debugPrint('✅ 所有眨眼测试完成');
-      } else {
-        setState(() => _status = '❌ 未找到Head_Mod实体');
-        if (kDebugMode) debugPrint('❌ 未找到Head_Mod实体');
-      }
-    } catch (e) {
-      setState(() => _status = '❌ 眨眼测试失败: $e');
-      if (kDebugMode) debugPrint('❌ 眨眼测试失败: $e');
-    } finally {
-      setState(() => _isTestingBlink = false);
-    }
-  }
-
-  // 👁️ 初始化眨眼控制（找到Head_Mod实体）
-  Future<void> _initializeBlinkControl() async {
-    if (_asset == null) return;
-
-    try {
-      final childEntities = await _asset!.getChildEntities();
-      for (final entity in childEntities) {
-        final entityName = FilamentApp.instance!.getNameForEntity(entity);
-        if (entityName == "Head_Mod") {
-          _headEntity = entity;
-          if (kDebugMode) {
-            debugPrint('✅ 找到Head_Mod实体，眨眼控制已初始化');
-
-            // 显示Head_Mod中的morph targets
-            final morphTargets = await _asset!.getMorphTargetNames(
-              entity: entity,
-            );
-            debugPrint('📊 Head_Mod包含 ${morphTargets.length} 个morph targets:');
-            for (int i = 0; i < morphTargets.length; i++) {
-              final target = morphTargets[i];
-              if (target.contains('eyeBlink')) {
-                debugPrint('   👁️ [$i] $target (眨眼相关)');
-              } else {
-                debugPrint('   [$i] $target');
-              }
-            }
-          }
-          break;
-        }
-      }
-
-      if (_headEntity == null) {
-        if (kDebugMode) debugPrint('❌ 未找到Head_Mod实体');
-      }
-    } catch (e) {
-      if (kDebugMode) debugPrint('❌ 初始化眨眼控制失败: $e');
-    }
-  }
-
-  // 👁️ 实时设置眨眼权重
-  Future<void> _setBlinkWeights() async {
-    if (_asset == null || _headEntity == null) return;
-
-    try {
-      final morphTargets = await _asset!.getMorphTargetNames(
-        entity: _headEntity!,
-      );
-      final weights = List<double>.filled(morphTargets.length, 0.0);
-
-      // 设置左眼权重 - 使用Head_Mod中的F.eyeBlinkLeft
-      final leftBlinkIndex = morphTargets.indexOf('F.eyeBlinkLeft');
-      if (leftBlinkIndex >= 0) {
-        weights[leftBlinkIndex] = _leftEyeBlinkWeight;
-        if (kDebugMode && _leftEyeBlinkWeight != 0) {
-          debugPrint('👁️ 设置左眼权重: F.eyeBlinkLeft = $_leftEyeBlinkWeight');
-        }
-      } else {
-        if (kDebugMode) debugPrint('⚠️ 未找到F.eyeBlinkLeft morph target');
-      }
-
-      // 设置右眼权重 - 使用Head_Mod中的F.eyeBlinkRight
-      final rightBlinkIndex = morphTargets.indexOf('F.eyeBlinkRight');
-      if (rightBlinkIndex >= 0) {
-        weights[rightBlinkIndex] = _rightEyeBlinkWeight;
-        if (kDebugMode && _rightEyeBlinkWeight != 0) {
-          debugPrint('👁️ 设置右眼权重: F.eyeBlinkRight = $_rightEyeBlinkWeight');
-        }
-      } else {
-        if (kDebugMode) debugPrint('⚠️ 未找到F.eyeBlinkRight morph target');
-      }
-
-      await _asset!.setMorphTargetWeights(_headEntity!, weights);
-    } catch (e) {
-      if (kDebugMode) debugPrint('❌ 设置眨眼权重失败: $e');
-    }
-  }
-
   // 相机预设切换 - 自定义实现，针对xiaomeng模型优化
   Future<void> _applyCameraPreset(CameraPreset preset) async {
     if (_viewer == null) return;
@@ -1043,7 +854,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       }
 
       debugPrint('💡 这些morph targets会在idle动画中自动驱动眨眼效果');
-      debugPrint('🎬 点击"测试眨眼"按钮可以手动测试眨眼效果');
+      debugPrint('�️ 使用眨眼眨控制滑块可以手动调整眨眼效果');
     }
   }
 
@@ -1395,11 +1206,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
             const SizedBox(height: 8),
 
-            // 眨眼控制区
-            _buildBlinkControlSection(),
-
-            const SizedBox(height: 8),
-
             // 设置区
             _buildSettingsSection(),
 
@@ -1515,26 +1321,9 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
           const SizedBox(height: 8),
 
-          // 眨眼测试按钮
+          // 停止动画按钮
           Row(
             children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _isInitialized && !_isPlaying && !_isTestingBlink
-                      ? _testBlinkAnimation
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                  ),
-                  icon: const Icon(Icons.visibility, size: 18),
-                  label: const Text('测试眨眼', style: TextStyle(fontSize: 13)),
-                ),
-              ),
-
-              const SizedBox(width: 8),
-
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: _isInitialized ? _stopAllAnimations : null,
@@ -1796,263 +1585,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
         }
         return 'Anim$index';
     }
-  }
-
-  // 👁️ 眨眼控制区域
-  Widget _buildBlinkControlSection() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 标题
-          Row(
-            children: [
-              const Icon(Icons.visibility, size: 16, color: Colors.orange),
-              const SizedBox(width: 8),
-              const Text(
-                '眨眼控制',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              const Spacer(),
-              Text(
-                '范围: -2.0 ~ 5.0',
-                style: TextStyle(fontSize: 10, color: Colors.grey[600]),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-
-          // 左眼滑块
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Text(
-                    '左眼',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-                  ),
-                  const Spacer(),
-                  Text(
-                    _leftEyeBlinkWeight.toStringAsFixed(2),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.blue[700],
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-              Slider(
-                value: _leftEyeBlinkWeight,
-                min: -2.0,
-                max: 5.0,
-                divisions: 140, // 0.05 精度
-                onChanged: _isInitialized
-                    ? (value) {
-                        setState(() {
-                          _leftEyeBlinkWeight = value;
-                        });
-                        _setBlinkWeights();
-                      }
-                    : null,
-                activeColor: Colors.blue[400],
-                inactiveColor: Colors.grey[300],
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 8),
-
-          // 右眼滑块
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Text(
-                    '右眼',
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-                  ),
-                  const Spacer(),
-                  Text(
-                    _rightEyeBlinkWeight.toStringAsFixed(2),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.green[700],
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-              Slider(
-                value: _rightEyeBlinkWeight,
-                min: -2.0,
-                max: 5.0,
-                divisions: 140, // 0.05 精度
-                onChanged: _isInitialized
-                    ? (value) {
-                        setState(() {
-                          _rightEyeBlinkWeight = value;
-                        });
-                        _setBlinkWeights();
-                      }
-                    : null,
-                activeColor: Colors.green[400],
-                inactiveColor: Colors.grey[300],
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 8),
-
-          // 快捷按钮 - 第一行
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = 0.0;
-                            _rightEyeBlinkWeight = 0.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('重置', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = 1.0;
-                            _rightEyeBlinkWeight = 1.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('1.0', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = 2.0;
-                            _rightEyeBlinkWeight = 2.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('2.0', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 4),
-
-          // 快捷按钮 - 第二行
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = -1.0;
-                            _rightEyeBlinkWeight = -1.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.purple[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('-1.0', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = 3.0;
-                            _rightEyeBlinkWeight = 3.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.indigo[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('3.0', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: _isInitialized
-                      ? () {
-                          setState(() {
-                            _leftEyeBlinkWeight = 5.0;
-                            _rightEyeBlinkWeight = 5.0;
-                          });
-                          _setBlinkWeights();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal[400],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                  ),
-                  child: const Text('5.0', style: TextStyle(fontSize: 10)),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 
   // ⚙️ 设置区域
