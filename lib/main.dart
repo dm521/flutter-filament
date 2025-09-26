@@ -8,7 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:animation_tools_dart/animation_tools_dart.dart';
-import 'camera_presets.dart';
+
+enum CameraPreset {
+  soloCloseUp,   // 单人演播（当前较远，接近全身）
+  halfBody,      // 半身像（腰部以上）
+  bustCloseUp    // 胸像/肩部以上特写
+}
 
 void main() {
   runApp(const LipSyncApp());
@@ -237,7 +242,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       setState(() => _status = '加载角色模型...');
 
       // 加载模型
-      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0925.glb");
+      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0926.glb");
 
       // 检测和设置动画
       await _loadAnimations();
