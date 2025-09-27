@@ -71,9 +71,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   Timer? _blinkWeightTimer;
   bool _isSettingWeights = false;
 
-  // 手动停止标志
-  bool _isManuallyStopped = false;
-
   // 人物旋转控制
   double _rotationAngle = 0.0; // 0=正面, 90=右侧, 180=背面, 270=左侧
 
@@ -82,7 +79,6 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   int _idleAnimationIndex = -1;
   bool _isIdlePlaying = false;
   int _selectedAnimationIndex = -1;
-  bool _isCustomAnimationPlaying = false;
 
   @override
   void initState() {
@@ -94,11 +90,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   void dispose() {
     _completeSubscription?.cancel();
     _audioPlayer.dispose();
-    _blinkWeightTimer?.cancel(); // 清理眨眼权重定时器
-    // 停止所有动画
-    if (_asset != null) {
-      _stopAllAnimations();
-    }
+    _blinkWeightTimer?.cancel();
     super.dispose();
   }
 
@@ -242,7 +234,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       setState(() => _status = '加载角色模型...');
 
       // 加载模型
-      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0926.glb");
+      _asset = await _viewer!.loadGltf("assets/models/xiaomeng_0927.glb");
 
       // 检测和设置动画
       await _loadAnimations();
@@ -295,12 +287,11 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     try {
       setState(() {
         _isPlaying = true;
-        _isManuallyStopped = false; // 重置手动停止标志
         _status = '🎬 播放中...';
       });
 
-      // 🛑 暂停所有动画，避免冲突
-      await _stopAllAnimations();
+      // 暂停当前动画，避免冲突
+      await _pauseCurrentAnimations();
 
       // 🎯 先设置音频源，然后获取实际时长（确保同步）
       final audioSource = AssetSource('wav/output.wav');
@@ -334,12 +325,8 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
           _status = '✅ 播放完成';
         });
 
-        // 🔄 恢复之前的动画状态
-        if (_selectedAnimationIndex >= 0) {
-          await _playSelectedAnimation(_selectedAnimationIndex);
-        } else {
-          await _resumeIdleAnimation();
-        }
+        // 恢复之前的动画状态
+        await _resumePreviousAnimation();
       });
     } catch (e) {
       setState(() {
@@ -349,11 +336,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       if (kDebugMode) debugPrint('播放失败: $e');
 
       // 发生错误时也要恢复之前的动画状态
-      if (_selectedAnimationIndex >= 0) {
-        await _playSelectedAnimation(_selectedAnimationIndex);
-      } else {
-        await _resumeIdleAnimation();
-      }
+      await _resumePreviousAnimation();
     }
   }
 
@@ -557,70 +540,40 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
       setState(() => _status = '✅ 已停止');
 
-      // 🔄 恢复之前的动画状态
-      if (_selectedAnimationIndex >= 0) {
-        await _playSelectedAnimation(_selectedAnimationIndex);
-      } else {
-        await _resumeIdleAnimation();
-      }
+      // 恢复之前的动画状态
+      await _resumePreviousAnimation();
     } catch (e) {
       setState(() => _status = '❌ 停止失败: $e');
       if (kDebugMode) debugPrint('停止失败: $e');
 
       // 即使停止失败也要尝试恢复之前的动画状态
-      if (_selectedAnimationIndex >= 0) {
-        await _playSelectedAnimation(_selectedAnimationIndex);
-      } else {
-        await _resumeIdleAnimation();
-      }
+      await _resumePreviousAnimation();
     }
   }
 
-  // 🛑 停止所有动画
-  Future<void> _stopAllAnimations() async {
-    if (kDebugMode) debugPrint('🛑 停止按钮被点击，开始停止所有动画...');
-
+  // 暂停当前动画（不清除状态）
+  Future<void> _pauseCurrentAnimations() async {
+    if (_asset == null) return;
     try {
-      setState(() => _status = '⏹️ 停止所有动画...');
-
-      // 停止音频
-      await _audioPlayer.stop();
-      _completeSubscription?.cancel();
-
       // 停止所有glTF动画
-      if (_asset != null) {
-        for (int i = 0; i < _animations.length; i++) {
-          try {
-            await _asset!.stopGltfAnimation(i);
-          } catch (e) {
-            if (kDebugMode) debugPrint('⚠️ 停止动画$i失败: $e');
-          }
-        }
-
-        // 清除morph动画数据
-        final childEntities = await _asset!.getChildEntities();
-        for (final entity in childEntities) {
-          try {
-            await _asset!.clearMorphAnimationData(entity);
-          } catch (e) {
-            // 忽略清除失败的错误
-          }
+      for (int i = 0; i < _animations.length; i++) {
+        try {
+          await _asset!.stopGltfAnimation(i);
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ 停止动画$i失败: $e');
         }
       }
-
-      setState(() {
-        _isPlaying = false;
-        _isIdlePlaying = false;
-        _isCustomAnimationPlaying = false;
-        _selectedAnimationIndex = -1;
-        _isManuallyStopped = true; // 标记为手动停止
-        _status = '✅ 所有动画已停止 - 角色静止';
-      });
-
-      if (kDebugMode) debugPrint('✅ 所有动画已停止，角色保持静止状态');
     } catch (e) {
-      setState(() => _status = '❌ 停止动画失败: $e');
-      if (kDebugMode) debugPrint('停止所有动画失败: $e');
+      if (kDebugMode) debugPrint('暂停动画失败: $e');
+    }
+  }
+
+  // 恢复之前的动画状态
+  Future<void> _resumePreviousAnimation() async {
+    if (_selectedAnimationIndex >= 0) {
+      await _playSelectedAnimation(_selectedAnimationIndex);
+    } else {
+      await _resumeIdleAnimation();
     }
   }
 
@@ -695,88 +648,47 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     await _applyCameraPreset(_currentCameraPreset);
   }
 
-  // 获取旋转角度的描述文字
   String _getRotationDescription(double angle) {
-    if (angle >= -22.5 && angle <= 22.5) return '正面';
-    if (angle > 22.5 && angle <= 67.5) return '右前';
-    if (angle > 67.5 && angle <= 112.5) return '右侧';
-    if (angle > 112.5 && angle <= 157.5) return '右后';
-    if (angle > 157.5 || angle <= -157.5) return '背面';
-    if (angle > -157.5 && angle <= -112.5) return '左后';
-    if (angle > -112.5 && angle <= -67.5) return '左侧';
-    if (angle > -67.5 && angle <= -22.5) return '左前';
-    return '正面';
+    const descriptions = ['正面', '右前', '右侧', '右后', '背面', '左后', '左侧', '左前'];
+    final index = ((angle + 202.5) % 360 / 45).floor() % 8;
+    return descriptions[index];
   }
 
-  // 👁️ 初始化眨眼控制（找到Head_Mod实体）
   Future<void> _initializeBlinkControl() async {
     if (_asset == null) return;
-
     try {
-      final childEntities = await _asset!.getChildEntities();
-      for (final entity in childEntities) {
-        final entityName = FilamentApp.instance!.getNameForEntity(entity);
-        if (entityName == "Head_Mod") {
-          _headEntity = entity;
-          if (kDebugMode) {
-            debugPrint('✅ 找到Head_Mod实体，眨眼控制已初始化');
-          }
-          break;
-        }
-      }
-
-      if (_headEntity == null) {
-        if (kDebugMode) debugPrint('❌ 未找到Head_Mod实体');
-      }
+      final entities = await _asset!.getChildEntities();
+      _headEntity = entities.firstWhere(
+        (e) => FilamentApp.instance!.getNameForEntity(e) == "Head_Mod",
+        orElse: () => throw Exception('Head_Mod not found'),
+      );
+      if (kDebugMode) debugPrint('✅ 找到Head_Mod实体');
     } catch (e) {
       if (kDebugMode) debugPrint('❌ 初始化眨眼控制失败: $e');
     }
   }
 
-  // 👁️ 防抖动设置眨眼权重
   void _setBlinkWeights() {
-    // 取消之前的定时器
     _blinkWeightTimer?.cancel();
-
-    // 设置新的定时器，延迟执行
-    _blinkWeightTimer = Timer(Duration(milliseconds: 100), () {
-      _setBlinkWeightsImmediate();
-    });
+    _blinkWeightTimer = Timer(Duration(milliseconds: 100), _setBlinkWeightsImmediate);
   }
 
-  // 👁️ 立即设置眨眼权重（内部方法）
   Future<void> _setBlinkWeightsImmediate() async {
     if (_asset == null || _headEntity == null || _isSettingWeights) return;
-
     _isSettingWeights = true;
-
     try {
-      final morphTargets = await _asset!.getMorphTargetNames(
-        entity: _headEntity!,
-      );
+      final morphTargets = await _asset!.getMorphTargetNames(entity: _headEntity!);
+      if (morphTargets.isEmpty) return;
+      
       final weights = List<double>.filled(morphTargets.length, 0.0);
-
-      // 设置左眼权重 - 使用Head_Mod中的blendShape1.eyeBlinkLeft
-      final leftBlinkIndex = morphTargets.indexOf('F.eyeBlinkLeft');
-      if (leftBlinkIndex >= 0 && leftBlinkIndex < weights.length) {
-        weights[leftBlinkIndex] = _leftEyeBlinkWeight.clamp(0.0, 1.0);
-      }
-
-      // 设置右眼权重 - 使用Head_Mod中的blendShape1.eyeBlinkRight
-      final rightBlinkIndex = morphTargets.indexOf('F.eyeBlinkRight');
-      if (rightBlinkIndex >= 0 && rightBlinkIndex < weights.length) {
-        weights[rightBlinkIndex] = _rightEyeBlinkWeight.clamp(0.0, 1.0);
-      }
-
-      // 安全检查：确保morphTargets不为空
-      if (morphTargets.isEmpty) {
-        if (kDebugMode) debugPrint('⚠️ morphTargets为空，跳过权重设置');
-        return;
-      }
-
+      final blinkTargets = {'F.eyeBlinkLeft': _leftEyeBlinkWeight, 'F.eyeBlinkRight': _rightEyeBlinkWeight};
+      
+      blinkTargets.forEach((name, weight) {
+        final index = morphTargets.indexOf(name);
+        if (index >= 0) weights[index] = weight.clamp(0.0, 1.0);
+      });
+      
       await _asset!.setMorphTargetWeights(_headEntity!, weights);
-
-      // 权重设置成功，不输出调试信息以保持控制台简洁
     } catch (e) {
       if (kDebugMode) debugPrint('❌ 设置眨眼权重失败: $e');
     } finally {
@@ -828,63 +740,32 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
-  // 🔍 查找idle动画
   void _findIdleAnimation(List<String> animationNames) {
-    _idleAnimationIndex = -1;
-
-    // 查找包含idle关键词的动画
-    for (int i = 0; i < animationNames.length; i++) {
-      final animName = animationNames[i].toLowerCase();
-      if (animName.contains('idle') ||
-          animName.contains('wait') ||
-          animName.contains('stand') ||
-          animName.contains('breathing')) {
-        _idleAnimationIndex = i;
-        if (kDebugMode) {
-          debugPrint('✅ 找到idle动画: ${animationNames[i]} (索引: $i)');
-        }
-        break;
-      }
-    }
-
-    // 如果没找到idle动画，使用第一个动画
+    const idleKeywords = ['idle', 'wait', 'stand', 'breathing'];
+    _idleAnimationIndex = animationNames.indexWhere(
+      (name) => idleKeywords.any((keyword) => name.toLowerCase().contains(keyword))
+    );
     if (_idleAnimationIndex == -1 && animationNames.isNotEmpty) {
       _idleAnimationIndex = 0;
-      if (kDebugMode) {
-        debugPrint('⚠️ 未找到idle动画，使用第一个动画: ${animationNames[0]}');
-      }
+    }
+    if (kDebugMode && _idleAnimationIndex >= 0) {
+      debugPrint('✅ 找到idle动画: ${animationNames[_idleAnimationIndex]} (索引: $_idleAnimationIndex)');
     }
   }
 
-  // 🎬 开始播放idle动画
   Future<void> _startIdleAnimation() async {
     if (_asset == null || _idleAnimationIndex == -1) return;
-
     try {
-      if (kDebugMode) {
-        debugPrint('🎬 开始播放idle动画...');
-      }
-
       await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
       _isIdlePlaying = true;
-
-      if (kDebugMode) {
-        debugPrint('✅ Idle动画播放中: ${_animations[_idleAnimationIndex]}');
-      }
+      if (kDebugMode) debugPrint('✅ Idle动画播放中');
     } catch (e) {
       if (kDebugMode) debugPrint('❌ Idle动画播放失败: $e');
     }
   }
 
-  // 🔄 恢复idle动画
   Future<void> _resumeIdleAnimation() async {
-    // 如果用户手动停止了动画，不要自动恢复
-    if (_isManuallyStopped) {
-      if (kDebugMode) debugPrint('🛑 用户手动停止了动画，跳过自动恢复idle动画');
-      return;
-    }
-
-    if (!_isIdlePlaying && !_isCustomAnimationPlaying) {
+    if (!_isIdlePlaying && _selectedAnimationIndex == -1) {
       await _startIdleAnimation();
     }
   }
@@ -968,134 +849,50 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
-  // 🎬 播放选中的动画
   Future<void> _playSelectedAnimation(int animationIndex) async {
-    if (_asset == null ||
-        animationIndex < 0 ||
-        animationIndex >= _animations.length) {
-      return;
-    }
-
+    if (_asset == null || animationIndex < 0 || animationIndex >= _animations.length) return;
     try {
-      // 停止当前播放的动画
-      await _stopAllAnimations();
-
-      // 播放选中的动画
+      await _pauseCurrentAnimations();
       await _asset!.playGltfAnimation(animationIndex, loop: true);
-
       setState(() {
         _selectedAnimationIndex = animationIndex;
-        _isCustomAnimationPlaying = true;
         _isIdlePlaying = false;
-        _isManuallyStopped = false; // 重置手动停止标志
       });
-
-      if (kDebugMode) {
-        debugPrint('🎬 播放动画: ${_animations[animationIndex]}');
-      }
+      if (kDebugMode) debugPrint('🎬 播放动画: ${_animations[animationIndex]}');
     } catch (e) {
       if (kDebugMode) debugPrint('❌ 播放动画失败: $e');
     }
   }
 
-  // 🔄 重置到idle动画
   Future<void> _resetToIdle() async {
-    await _stopAllAnimations();
-    setState(() {
-      _selectedAnimationIndex = -1;
-      _isManuallyStopped = false; // 重置手动停止标志
-    });
+    await _pauseCurrentAnimations();
+    setState(() => _selectedAnimationIndex = -1);
     await _startIdleAnimation();
   }
 
-  // 🔍 分析BS数据范围，为优化提供依据
   void _analyzeBSDataRange() {
-    if (_blendshapeData == null || _blendshapeData!.isEmpty) return;
-
-    // 关键口型相关的索引
-    const mouthIndices = {
-      'jawOpen': 17,
-      'mouthClose': 18,
-      'mouthFunnel': 19,
-      'mouthPucker': 20,
-      'mouthLeft': 21,
-      'mouthRight': 22,
-      'mouthSmileLeft': 23,
-      'mouthSmileRight': 24,
-    };
-
-    final stats = <String, Map<String, double>>{};
-
-    for (final entry in mouthIndices.entries) {
-      final name = entry.key;
-      final index = entry.value;
-
-      double min = double.infinity;
-      double max = double.negativeInfinity;
-      double sum = 0.0;
-      int nonZeroCount = 0;
-
-      for (final frame in _blendshapeData!) {
-        if (index < frame.length) {
-          final value = frame[index];
-          min = math.min(min, value);
-          max = math.max(max, value);
-          sum += value;
-          if (value > 0.001) nonZeroCount++;
-        }
+    if (_blendshapeData == null || _blendshapeData!.isEmpty || !kDebugMode) return;
+    const mouthIndices = {17: 'jawOpen', 18: 'mouthClose', 19: 'mouthFunnel', 20: 'mouthPucker'};
+    debugPrint('📊 BS数据分析 (关键口型):');
+    
+    mouthIndices.forEach((index, name) {
+      final values = _blendshapeData!.where((frame) => index < frame.length).map((frame) => frame[index]);
+      if (values.isNotEmpty) {
+        final min = values.reduce(math.min);
+        final max = values.reduce(math.max);
+        final avg = values.reduce((a, b) => a + b) / values.length;
+        debugPrint('   $name: min=${min.toStringAsFixed(3)}, max=${max.toStringAsFixed(3)}, avg=${avg.toStringAsFixed(3)}');
       }
-
-      final avg = sum / _blendshapeData!.length;
-      stats[name] = {
-        'min': min,
-        'max': max,
-        'avg': avg,
-        'nonZeroRatio': nonZeroCount / _blendshapeData!.length,
-      };
-    }
-
-    if (kDebugMode) {
-      debugPrint('📊 BS数据分析 (关键口型):');
-      for (final entry in stats.entries) {
-        final name = entry.key;
-        final stat = entry.value;
-        debugPrint(
-          '   $name: min=${stat['min']!.toStringAsFixed(3)}, '
-          'max=${stat['max']!.toStringAsFixed(3)}, '
-          'avg=${stat['avg']!.toStringAsFixed(3)}, '
-          'active=${(stat['nonZeroRatio']! * 100).toStringAsFixed(1)}%',
-        );
-      }
-    }
+    });
   }
 
-  // 🎯 动态权重优化函数
   double _optimizeWeight(String morphName, double originalWeight) {
-    // 基于GPT-5建议的scaleFactor方案
     const morphScaleFactors = {
-      // 口型相关 - 增强效果
-      'F.jawOpen': 2.0, // 张嘴动作需要更明显
-      'F.mouthClose': 1.5, // 闭嘴动作
-      'F.mouthFunnel': 2.5, // 嘟嘴动作需要很明显
-      'F.mouthPucker': 2.0, // 撅嘴动作
-      'F.mouthLeft': 1.8, // 嘴部左右移动
-      'F.mouthRight': 1.8,
-      'F.mouthSmileLeft': 1.3, // 微笑动作适度增强
-      'F.mouthSmileRight': 1.3,
-
-      // 其他面部表情 - 保持自然
-      'F.eyeBlinkLeft': 1.0, // 眨眼保持原始
-      'F.eyeBlinkRight': 1.0,
-      'F.browInnerUp': 1.2, // 眉毛动作轻微增强
-      'F.browDownLeft': 1.2,
-      'F.browDownRight': 1.2,
+      'F.jawOpen': 2.0, 'F.mouthClose': 1.5, 'F.mouthFunnel': 2.5, 'F.mouthPucker': 2.0,
+      'F.mouthLeft': 1.8, 'F.mouthRight': 1.8, 'F.mouthSmileLeft': 1.3, 'F.mouthSmileRight': 1.3,
+      'F.browInnerUp': 1.2, 'F.browDownLeft': 1.2, 'F.browDownRight': 1.2,
     };
-
-    final scaleFactor = morphScaleFactors[morphName] ?? 1.0;
-    final optimizedWeight = originalWeight * scaleFactor;
-
-    // 限制在合理范围内，避免过度变形
-    return optimizedWeight.clamp(0.0, 1.5);
+    return (originalWeight * (morphScaleFactors[morphName] ?? 1.0)).clamp(0.0, 1.5);
   }
 
   @override
@@ -1221,13 +1018,13 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
             const SizedBox(height: 8),
 
-            // 眨眼控制区
-            _buildBlinkControlSection(),
+            // 动作控制区
+            _buildActionControlSection(),
 
             const SizedBox(height: 8),
 
-            // 设置区
-            _buildSettingsSection(),
+            // 眨眼控制区
+            _buildBlinkControlSection(),
 
             // 底部安全区域
             const SizedBox(height: 8),
@@ -1339,34 +1136,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
             ],
           ),
 
-          const SizedBox(height: 8),
 
-          // 停止动画按钮
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed:
-                      (_isInitialized &&
-                          (_isPlaying ||
-                              _isIdlePlaying ||
-                              _isCustomAnimationPlaying))
-                      ? () {
-                          if (kDebugMode) debugPrint('🛑 停止动画按钮被点击');
-                          _stopAllAnimations();
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[600],
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                  ),
-                  icon: const Icon(Icons.pause, size: 18),
-                  label: const Text('停止动画', style: TextStyle(fontSize: 13)),
-                ),
-              ),
-            ],
-          ),
         ],
       ),
     );
@@ -1450,10 +1220,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
             ],
           ),
 
-          const SizedBox(height: 12),
 
-          // 🎭 动画选择区域
-          _buildAnimationSection(),
         ],
       ),
     );
@@ -1494,127 +1261,117 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }).toList();
   }
 
-  // 🎭 动画选择区域
-  Widget _buildAnimationSection() {
-    if (_animations.isEmpty) {
-      return const SizedBox.shrink();
-    }
+  // 🎭 动作控制区域
+  Widget _buildActionControlSection() {
+    // 总是显示动作控制区域，即使动画列表为空
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 动画标题和状态
-        Row(
-          children: [
-            const Icon(Icons.animation, size: 16, color: Colors.purple),
-            const SizedBox(width: 4),
-            const Text(
-              '动画',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            const Spacer(),
-            // 🎯 固定宽度的状态显示，避免布局跳动
-            SizedBox(
-              width: 50, // 固定宽度
-              child: Text(
-                _selectedAnimationIndex >= 0
-                    ? _getCustomAnimationName(_selectedAnimationIndex)
-                    : _isIdlePlaying
-                    ? 'Idle00'
-                    : '',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: _selectedAnimationIndex >= 0
-                      ? Colors.purple
-                      : Colors.blue,
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 标题和状态
+          Row(
+            children: [
+              const Icon(Icons.directions_run, size: 16, color: Colors.purple),
+              const SizedBox(width: 4),
+              const Text('动作', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _selectedAnimationIndex >= 0 ? Colors.purple[50] : Colors.blue[50],
+                  borderRadius: BorderRadius.circular(4),
                 ),
-                textAlign: TextAlign.end, // 右对齐
+                child: Text(
+                  _selectedAnimationIndex >= 0 ? _getActionName(_selectedAnimationIndex) : 'Idle',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _selectedAnimationIndex >= 0 ? Colors.purple : Colors.blue,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 8),
-
-        // 动画选择按钮 - 从第二个动画开始显示（第一个是默认idle）
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: _animations.length > 1
-              ? _animations.asMap().entries.skip(1).map((entry) {
-                  final index = entry.key;
-                  final customName = _getCustomAnimationName(index);
-                  final isSelected = _selectedAnimationIndex == index;
-
-                  return _buildAnimationButton(customName, index, isSelected);
-                }).toList()
-              : [],
-        ),
-      ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          // 动作按钮
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildActionButton('Idle', -1, _selectedAnimationIndex == -1 && _isIdlePlaying),
+              if (_animations.isNotEmpty)
+                ..._getTalkAnimations().map((entry) => 
+                  _buildActionButton(entry.key, entry.value, _selectedAnimationIndex == entry.value)
+                )
+              else
+                _buildActionButton('加载中...', -2, false),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
-  // 🎬 构建动画按钮
-  Widget _buildAnimationButton(
-    String label,
-    int animationIndex,
-    bool isSelected,
-  ) {
+  // 获取Talk动画列表
+  List<MapEntry<String, int>> _getTalkAnimations() {
+    final talkAnimations = <MapEntry<String, int>>[];
+    for (int i = 1; i < _animations.length && i <= 4; i++) {
+      talkAnimations.add(MapEntry('Talk${i.toString().padLeft(2, '0')}', i));
+    }
+    return talkAnimations;
+  }
+
+  // 获取动作名称
+  String _getActionName(int index) {
+    if (index >= 1 && index <= 4) return 'Talk${index.toString().padLeft(2, '0')}';
+    return 'Talk${index.toString().padLeft(2, '0')}';
+  }
+
+  // 构建动作按钮
+  Widget _buildActionButton(String label, int actionIndex, bool isSelected) {
     return InkWell(
       onTap: _isInitialized && !_isPlaying
-          ? () {
-              if (animationIndex == -1) {
-                _resetToIdle();
-              } else {
-                _playSelectedAnimation(animationIndex);
-              }
-            }
+          ? () => actionIndex == -1 ? _resetToIdle() : _playSelectedAnimation(actionIndex)
           : null,
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
-        constraints: const BoxConstraints(minWidth: 45), // 🎯 设置最小宽度，保持一致性
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        constraints: const BoxConstraints(minWidth: 60),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.purple : Colors.grey[200],
-          borderRadius: BorderRadius.circular(6),
-          border: isSelected
-              ? Border.all(color: Colors.purple, width: 1)
-              : null,
+          color: isSelected ? Colors.purple : Colors.grey[100],
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? Colors.purple : Colors.grey[300]!,
+            width: isSelected ? 2 : 1,
+          ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 10,
+            fontSize: 12,
             color: isSelected ? Colors.white : Colors.grey[700],
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
           ),
-          textAlign: TextAlign.center, // 🎯 居中对齐
+          textAlign: TextAlign.center,
         ),
       ),
     );
   }
 
-  // 📝 获取简短的动画名称
-  // 📝 获取自定义动画名称
-  String _getCustomAnimationName(int index) {
-    // 根据索引位置返回自定义名称
-    switch (index) {
-      case 1:
-        return 'Talk01'; // 修正：第二个动画是Talk01
-      case 2:
-        return 'Talk02';
-      case 3:
-        return 'Talk03';
-      case 4:
-        return 'Talk04';
-      default:
-        // 如果有更多动画，继续编号
-        if (index > 4) {
-          return 'Talk${(index - 3).toString().padLeft(2, '0')}';
-        }
-        return 'Anim$index';
-    }
-  }
+
 
   // 👁️ 眨眼控制区域
   Widget _buildBlinkControlSection() {
