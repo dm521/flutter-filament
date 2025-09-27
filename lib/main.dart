@@ -8,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:thermion_flutter/thermion_flutter.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:animation_tools_dart/animation_tools_dart.dart';
+import 'blink_animation_controller.dart';
+import 'blink_config.dart';
+import 'blink_test.dart';
 
 enum CameraPreset {
   soloCloseUp,   // 单人演播（当前较远，接近全身）
@@ -60,7 +63,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   CameraPreset _currentCameraPreset = CameraPreset.soloCloseUp;
 
   // 优化控制
-  bool _enableOptimization = false; // 默认关闭，因为原始数据已经比较自然
+  final bool _enableOptimization = false; // 默认关闭，因为原始数据已经比较自然
 
   // 眨眼权重控制
   double _leftEyeBlinkWeight = 0.0;
@@ -70,6 +73,11 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   // 防抖动控制
   Timer? _blinkWeightTimer;
   bool _isSettingWeights = false;
+
+  // 自动眨眼动画控制器
+  BlinkAnimationController? _blinkController;
+  bool _autoBlinkEnabled = true;
+  String _currentBlinkPreset = '自然';
 
   // 人物旋转控制
   double _rotationAngle = 0.0; // 0=正面, 90=右侧, 180=背面, 270=左侧
@@ -91,6 +99,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     _completeSubscription?.cancel();
     _audioPlayer.dispose();
     _blinkWeightTimer?.cancel();
+    _blinkController?.dispose();
     super.dispose();
   }
 
@@ -249,6 +258,20 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
 
       // 初始化眨眼控制
       await _initializeBlinkControl();
+
+      // 初始化自动眨眼控制器
+      _initializeBlinkController();
+
+      // 运行眨眼动画测试（仅在调试模式下）
+      if (kDebugMode) {
+        BlinkAnimationTest.runAllTests();
+      }
+
+      // 直接启动自动眨眼（不依赖idle动画）
+      if (_autoBlinkEnabled && _blinkController != null) {
+        _blinkController!.startAutoBlink();
+        if (kDebugMode) debugPrint('🎯 独立启动自动眨眼动画');
+      }
 
       _isInitialized = true;
       setState(() => _status = '✅ 准备就绪');
@@ -563,6 +586,12 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
           if (kDebugMode) debugPrint('⚠️ 停止动画$i失败: $e');
         }
       }
+      
+      // 暂停自动眨眼（播放口型动画时）
+      if (_blinkController != null) {
+        _blinkController!.stopAutoBlink();
+      }
+      
     } catch (e) {
       if (kDebugMode) debugPrint('暂停动画失败: $e');
     }
@@ -668,6 +697,109 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     }
   }
 
+  /// 初始化自动眨眼控制器
+  void _initializeBlinkController() {
+    _blinkController = BlinkAnimationController(
+      onBlinkWeightChanged: (leftWeight, rightWeight) {
+        // 只有在自动眨眼启用时才更新权重
+        if (_autoBlinkEnabled) {
+          if (kDebugMode && (leftWeight > 0.01 || rightWeight > 0.01)) {
+            debugPrint('👁️ 眨眼权重更新: 左=${leftWeight.toStringAsFixed(3)}, 右=${rightWeight.toStringAsFixed(3)}');
+          }
+          setState(() {
+            _leftEyeBlinkWeight = leftWeight;
+            _rightEyeBlinkWeight = rightWeight;
+          });
+          _setBlinkWeightsImmediate();
+        }
+      },
+    );
+
+    if (kDebugMode) {
+      debugPrint('✅ 自动眨眼控制器已初始化');
+    }
+  }
+
+  /// 切换自动眨眼
+  void _toggleAutoBlink() {
+    if (_blinkController == null) return;
+
+    setState(() {
+      _autoBlinkEnabled = !_autoBlinkEnabled;
+    });
+
+    if (_autoBlinkEnabled) {
+      _blinkController!.startAutoBlink();
+      if (kDebugMode) debugPrint('👁️ 自动眨眼已启用');
+    } else {
+      _blinkController!.stopAutoBlink();
+      // 重置眨眼权重
+      setState(() {
+        _leftEyeBlinkWeight = 0.0;
+        _rightEyeBlinkWeight = 0.0;
+      });
+      _setBlinkWeightsImmediate();
+      if (kDebugMode) debugPrint('👁️ 自动眨眼已禁用');
+    }
+  }
+
+  /// 手动触发眨眼
+  void _triggerManualBlink() {
+    if (_blinkController == null) {
+      if (kDebugMode) debugPrint('⚠️ 眨眼控制器未初始化');
+      return;
+    }
+    
+    if (!_autoBlinkEnabled) {
+      if (kDebugMode) debugPrint('⚠️ 自动眨眼未启用，无法手动触发');
+      return;
+    }
+    
+    if (kDebugMode) debugPrint('🎯 手动触发眨眼');
+    _blinkController!.triggerBlink();
+  }
+
+  /// 测试眨眼功能（直接设置权重）
+  void _testBlinkWeights() {
+    if (kDebugMode) debugPrint('🧪 测试眨眼权重设置');
+    
+    // 测试闭眼
+    setState(() {
+      _leftEyeBlinkWeight = 1.0;
+      _rightEyeBlinkWeight = 1.0;
+    });
+    _setBlinkWeightsImmediate();
+    
+    // 2秒后睁眼
+    Timer(Duration(seconds: 2), () {
+      setState(() {
+        _leftEyeBlinkWeight = 0.0;
+        _rightEyeBlinkWeight = 0.0;
+      });
+      _setBlinkWeightsImmediate();
+      if (kDebugMode) debugPrint('🧪 眨眼权重测试完成');
+    });
+  }
+
+  /// 切换眨眼预设
+  void _changeBlinkPreset(String presetName) {
+    if (_blinkController == null) return;
+
+    final presets = BlinkPresets.getAllPresets();
+    final config = presets[presetName];
+    
+    if (config != null) {
+      _blinkController!.updateConfig(config);
+      setState(() {
+        _currentBlinkPreset = presetName;
+      });
+      
+      if (kDebugMode) {
+        debugPrint('👁️ 眨眼预设已切换为: $presetName');
+      }
+    }
+  }
+
   void _setBlinkWeights() {
     _blinkWeightTimer?.cancel();
     _blinkWeightTimer = Timer(Duration(milliseconds: 100), _setBlinkWeightsImmediate);
@@ -678,15 +810,30 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     _isSettingWeights = true;
     try {
       final morphTargets = await _asset!.getMorphTargetNames(entity: _headEntity!);
-      if (morphTargets.isEmpty) return;
+      if (morphTargets.isEmpty) {
+        if (kDebugMode) debugPrint('⚠️ Head_Mod没有morph targets');
+        return;
+      }
       
       final weights = List<double>.filled(morphTargets.length, 0.0);
       final blinkTargets = {'F.eyeBlinkLeft': _leftEyeBlinkWeight, 'F.eyeBlinkRight': _rightEyeBlinkWeight};
       
+      bool hasBlinkTargets = false;
       blinkTargets.forEach((name, weight) {
         final index = morphTargets.indexOf(name);
-        if (index >= 0) weights[index] = weight.clamp(0.0, 1.0);
+        if (index >= 0) {
+          weights[index] = weight.clamp(0.0, 1.0);
+          hasBlinkTargets = true;
+          if (kDebugMode && weight > 0.01) {
+            debugPrint('👁️ 设置 $name = ${weight.toStringAsFixed(3)}');
+          }
+        }
       });
+      
+      if (!hasBlinkTargets && kDebugMode) {
+        debugPrint('⚠️ 未找到眨眼相关的morph targets: F.eyeBlinkLeft, F.eyeBlinkRight');
+        debugPrint('   可用的morph targets: ${morphTargets.take(10).join(", ")}${morphTargets.length > 10 ? "..." : ""}');
+      }
       
       await _asset!.setMorphTargetWeights(_headEntity!, weights);
     } catch (e) {
@@ -754,11 +901,37 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
   }
 
   Future<void> _startIdleAnimation() async {
-    if (_asset == null || _idleAnimationIndex == -1) return;
+    if (kDebugMode) {
+      debugPrint('🎭 尝试启动idle动画...');
+      debugPrint('   _asset: ${_asset != null ? "已加载" : "未加载"}');
+      debugPrint('   _idleAnimationIndex: $_idleAnimationIndex');
+    }
+    
+    if (_asset == null || _idleAnimationIndex == -1) {
+      if (kDebugMode) debugPrint('❌ 无法启动idle动画：资源或索引无效');
+      return;
+    }
+    
     try {
       await _asset!.playGltfAnimation(_idleAnimationIndex, loop: true);
       _isIdlePlaying = true;
-      if (kDebugMode) debugPrint('✅ Idle动画播放中');
+      
+      if (kDebugMode) debugPrint('✅ Idle动画已启动');
+      
+      // 启动自动眨眼（如果启用）
+      if (kDebugMode) {
+        debugPrint('🔍 检查眨眼启动条件:');
+        debugPrint('   _autoBlinkEnabled: $_autoBlinkEnabled');
+        debugPrint('   _blinkController: ${_blinkController != null ? "已初始化" : "未初始化"}');
+      }
+      
+      if (_autoBlinkEnabled && _blinkController != null) {
+        _blinkController!.startAutoBlink();
+        if (kDebugMode) debugPrint('✅ 自动眨眼已启动');
+      } else {
+        if (kDebugMode) debugPrint('⚠️ 自动眨眼未启动：条件不满足');
+      }
+      
     } catch (e) {
       if (kDebugMode) debugPrint('❌ Idle动画播放失败: $e');
     }
@@ -858,6 +1031,12 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
         _selectedAnimationIndex = animationIndex;
         _isIdlePlaying = false;
       });
+      
+      // 选择动画时也启动自动眨眼
+      if (_autoBlinkEnabled && _blinkController != null) {
+        _blinkController!.startAutoBlink();
+      }
+      
       if (kDebugMode) debugPrint('🎬 播放动画: ${_animations[animationIndex]}');
     } catch (e) {
       if (kDebugMode) debugPrint('❌ 播放动画失败: $e');
@@ -1391,7 +1570,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 标题
+          // 标题和自动眨眼开关
           Row(
             children: [
               const Icon(Icons.visibility, size: 16, color: Colors.orange),
@@ -1401,12 +1580,116 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
               ),
               const Spacer(),
-              Text(
-                '范围: 0.0 ~ 1.0',
-                style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+              // 自动眨眼状态指示
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _autoBlinkEnabled ? Colors.green[50] : Colors.grey[100],
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _autoBlinkEnabled ? '自动' : '手动',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _autoBlinkEnabled ? Colors.green[700] : Colors.grey[600],
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
+
+          const SizedBox(height: 8),
+
+          // 自动眨眼控制行
+          Row(
+            children: [
+              const Text(
+                '自动眨眼',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+              ),
+              const Spacer(),
+              widgets.Transform.scale(
+                scale: 0.8,
+                child: Switch(
+                  value: _autoBlinkEnabled,
+                  onChanged: _isInitialized ? (value) => _toggleAutoBlink() : null,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeTrackColor: Colors.orange,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // 手动触发眨眼按钮
+              ElevatedButton(
+                onPressed: _isInitialized && _autoBlinkEnabled ? _triggerManualBlink : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange[400],
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: const Size(50, 28),
+                ),
+                child: const Text('眨眼', style: TextStyle(fontSize: 10)),
+              ),
+              const SizedBox(width: 4),
+              // 测试眨眼权重按钮
+              ElevatedButton(
+                onPressed: _isInitialized ? _testBlinkWeights : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue[400],
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: const Size(50, 28),
+                ),
+                child: const Text('测试', style: TextStyle(fontSize: 10)),
+              ),
+            ],
+          ),
+
+          // 眨眼预设选择（仅在自动模式下显示）
+          if (_autoBlinkEnabled) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Text(
+                  '预设',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: widgets.Axis.horizontal,
+                    child: Row(
+                      children: BlinkPresets.getAllPresets().keys.map((presetName) {
+                        final isSelected = _currentBlinkPreset == presetName;
+                        return Container(
+                          margin: const EdgeInsets.only(right: 6),
+                          child: InkWell(
+                            onTap: _isInitialized ? () => _changeBlinkPreset(presetName) : null,
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: isSelected ? Colors.orange : Colors.grey[200],
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                presetName,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: isSelected ? Colors.white : Colors.grey[700],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
 
           const SizedBox(height: 12),
 
@@ -1436,7 +1719,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                 min: 0.0,
                 max: 1.0,
                 divisions: 20, // 0.05 精度
-                onChanged: _isInitialized
+                onChanged: _isInitialized && !_autoBlinkEnabled
                     ? (value) {
                         setState(() {
                           _leftEyeBlinkWeight = value;
@@ -1444,7 +1727,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                         _setBlinkWeights();
                       }
                     : null,
-                activeColor: Colors.blue[400],
+                activeColor: _autoBlinkEnabled ? Colors.grey[400] : Colors.blue[400],
                 inactiveColor: Colors.grey[300],
               ),
             ],
@@ -1478,7 +1761,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                 min: 0.0,
                 max: 1.0,
                 divisions: 20, // 0.05 精度
-                onChanged: _isInitialized
+                onChanged: _isInitialized && !_autoBlinkEnabled
                     ? (value) {
                         setState(() {
                           _rightEyeBlinkWeight = value;
@@ -1486,7 +1769,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                         _setBlinkWeights();
                       }
                     : null,
-                activeColor: Colors.green[400],
+                activeColor: _autoBlinkEnabled ? Colors.grey[400] : Colors.green[400],
                 inactiveColor: Colors.grey[300],
               ),
             ],
@@ -1499,7 +1782,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
             children: [
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _isInitialized
+                  onPressed: _isInitialized && !_autoBlinkEnabled
                       ? () {
                           setState(() {
                             _leftEyeBlinkWeight = 0.0;
@@ -1509,7 +1792,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                         }
                       : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[400],
+                    backgroundColor: _autoBlinkEnabled ? Colors.grey[300] : Colors.grey[400],
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 6),
                   ),
@@ -1519,7 +1802,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _isInitialized
+                  onPressed: _isInitialized && !_autoBlinkEnabled
                       ? () {
                           setState(() {
                             _leftEyeBlinkWeight = 1.0;
@@ -1529,7 +1812,7 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
                         }
                       : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange[400],
+                    backgroundColor: _autoBlinkEnabled ? Colors.grey[300] : Colors.orange[400],
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 6),
                   ),
@@ -1543,64 +1826,5 @@ class _LipSyncPlayerState extends State<LipSyncPlayer> {
     );
   }
 
-  // ⚙️ 设置区域
-  Widget _buildSettingsSection() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 标题
-          Row(
-            children: [
-              const Icon(Icons.settings, size: 16, color: Colors.grey),
-              const SizedBox(width: 8),
-              const Text(
-                '设置',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
 
-          const SizedBox(height: 12),
-
-          // 口型优化开关
-          Row(
-            children: [
-              const Icon(Icons.tune, size: 14, color: Colors.grey),
-              const SizedBox(width: 8),
-              const Text(
-                '口型优化',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-              ),
-              const Spacer(),
-              widgets.Transform.scale(
-                scale: 0.8,
-                child: Switch(
-                  value: _enableOptimization,
-                  onChanged: (value) {
-                    setState(() {
-                      _enableOptimization = value;
-                    });
-                  },
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 }
